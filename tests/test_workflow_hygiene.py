@@ -81,18 +81,16 @@ def test_example_workflow_installs_engine_before_pr_checkout():
     assert text.index("Install consuming-repo deps") > text.index("Check out verified PR commit")
     install_step = text.split("- name: Install engine", 1)[1].split("- name:", 1)[0]
     assert "SAFE_PROPOSE_REF: ${{ vars.SAFE_PROPOSE_REF }}" in install_step
-    assert "SAFE_PROPOSE_TOKEN: ${{ secrets.SAFE_PROPOSE_TOKEN }}" in install_step
     guard = 'if [[ ! "$SAFE_PROPOSE_REF" =~ ^[0-9a-f]{40}$ ]]; then'
     install = 'python -m pip install "safe-propose'
     assert install_step.index(guard) < install_step.index("exit 1") < install_step.index(install)
     deps_step = text.split("- name: Install consuming-repo deps", 1)[1].split("- name:", 1)[0]
-    assert 'SAFE_PROPOSE_TOKEN: ""' in deps_step
     assert "SAFE_PROPOSE_REF: ${{ vars.SAFE_PROPOSE_REF }}" in deps_step
     pin_check = 'distribution("safe-propose").read_text("direct_url.json")'
     assert deps_step.index("pip install -r requirements.txt") < deps_step.index(pin_check)
 
 
-def _run_engine_install(tmp_path: Path, ref: str, token: str) -> subprocess.CompletedProcess:
+def _run_engine_install(tmp_path: Path, ref: str) -> subprocess.CompletedProcess:
     """Run the Install engine step with a fake ``python`` that logs its arguments."""
     python = tmp_path / "python"
     python.write_text("#!/bin/sh\nprintf 'pip called: %s\\n' \"$*\"\n")
@@ -102,7 +100,6 @@ def _run_engine_install(tmp_path: Path, ref: str, token: str) -> subprocess.Comp
     env = os.environ | {
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
         "SAFE_PROPOSE_REF": ref,
-        "SAFE_PROPOSE_TOKEN": token,
     }
     return subprocess.run(
         ["bash", "-c", script],
@@ -115,22 +112,17 @@ def _run_engine_install(tmp_path: Path, ref: str, token: str) -> subprocess.Comp
 
 
 def test_example_workflow_rejects_invalid_engine_ref_before_pip(tmp_path):
-    result = _run_engine_install(tmp_path, "not-a-commit", "placeholder")
+    result = _run_engine_install(tmp_path, "not-a-commit")
     assert result.returncode != 0
     assert "Set SAFE_PROPOSE_REF" in result.stdout
     assert "pip called" not in result.stdout
 
 
-def test_example_workflow_installs_engine_with_or_without_token(tmp_path):
+def test_example_workflow_installs_pinned_engine_from_public_url(tmp_path):
     sha = "ab" * 20
-    public = _run_engine_install(tmp_path, sha.upper(), "")
-    assert public.returncode == 0, public.stderr
-    assert f"safe-propose @ git+https://github.com/spalen0/safe-propose.git@{sha}" in public.stdout
-    assert "x-access-token" not in public.stdout
-
-    private = _run_engine_install(tmp_path, sha, "placeholder")
-    assert private.returncode == 0, private.stderr
-    assert "git+https://x-access-token:placeholder@github.com/spalen0/" in private.stdout
+    result = _run_engine_install(tmp_path, sha.upper())
+    assert result.returncode == 0, result.stderr
+    assert f"safe-propose @ git+https://github.com/spalen0/safe-propose.git@{sha}" in result.stdout
 
 
 def test_example_workflow_passes_inputs_via_env_and_quotes_them():

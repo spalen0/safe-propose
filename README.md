@@ -61,21 +61,17 @@ loads tx defs by name            ape-config.yaml # networks (incl. custom Katana
 simulate / diff / propose        .env / keyfile  # delegate key, RPC, API keys
 ```
 
-Install it into a multisig repo and run the CLI from that repo's PR branch. While this
-repository is private, provide a read-only access token:
+Install it into a multisig repo and run the CLI from that repo's PR branch:
 
 ```bash
-engine_url="git+https://x-access-token:${SAFE_PROPOSE_TOKEN}@github.com/spalen0/safe-propose.git"
-python -m pip install "safe-propose @ ${engine_url}@main"
+python -m pip install "safe-propose @ git+https://github.com/spalen0/safe-propose.git@master"
 ```
 
 For automation, pin a reviewed 40-character commit SHA. The consuming-repo workflow
 template (`examples/.github/workflows/safe-propose.yml`) reads that SHA from the
 `SAFE_PROPOSE_REF` repository variable — the single place the engine version is pinned —
 and fails if the PR's `requirements.txt` replaces that build, so do not list
-`safe-propose` there. While this repository is private, also set a read-only
-`SAFE_PROPOSE_TOKEN` secret; once it is public, delete the secret and the template
-installs from the public URL. Do not commit a filled `.env`.
+`safe-propose` there. Do not commit a filled `.env`.
 
 Tx definitions are loaded from **`scripts/safe_txs.py`** by default. Point at another
 module with `--txs-file`:

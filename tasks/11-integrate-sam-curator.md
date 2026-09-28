@@ -14,9 +14,8 @@ the existing roboanimals flow.
 2. Add `ape-config.yaml` (custom Katana network) — base it on `examples/ape-config.yaml`.
 3. Pin the engine to a reviewed commit with the example workflow's `SAFE_PROPOSE_REF`
    repository variable — the only pin; do not also list `safe-propose` in a requirements
-   file (the workflow fails if `requirements.txt` replaces the pinned build). While the
-   engine repo is private, add a read-only `SAFE_PROPOSE_TOKEN` secret; do not commit it.
-   For local runs, install that same SHA into a venv isolated from the brownie scripts.
+   file (the workflow fails if `requirements.txt` replaces the pinned build). For local
+   runs, install that same SHA into a venv isolated from the brownie scripts.
 4. Secrets hygiene: keep the proposer key + API keys in an untracked file / Ape keyfile;
    add any new secret files to `.gitignore`. **Do not** rely on committed `.env`.
 5. Document the curator flow in that repo's README: `dry-run` → review → `send`.

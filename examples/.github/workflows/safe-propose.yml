@@ -15,7 +15,6 @@
 # the Actions tab (workflow_dispatch).
 #
 # Required repo secrets:
-#   SAFE_PROPOSE_TOKEN          read-only engine repo access; only while it is private
 #   PROPOSER_PRIVATE_KEY        delegate/proposer key (must be an owner or registered delegate)
 #   <NET>_RPC                   per-network RPC (never commit a URL with a key)
 #   APE_SAFE_GATEWAY_API_KEY    gateway chains (incl. HyperEVM, Robinhood); Katana/RISE are keyless
@@ -207,7 +206,6 @@ jobs:
       - name: Install engine
         env:
           SAFE_PROPOSE_REF: ${{ vars.SAFE_PROPOSE_REF }}
-          SAFE_PROPOSE_TOKEN: ${{ secrets.SAFE_PROPOSE_TOKEN }}
           GITHUB_TOKEN: ""
           GH_TOKEN: ""
         run: |
@@ -219,13 +217,7 @@ jobs:
           fi
           python -m pip install --upgrade pip
           # Runs on the default-branch checkout, before any PR tree is checked out.
-          # The token is only needed while the engine repo is private; leave the
-          # secret unset once it is public.
-          engine_url="git+https://github.com/"
-          if [ -n "${SAFE_PROPOSE_TOKEN:-}" ]; then
-            engine_url="git+https://x-access-token:${SAFE_PROPOSE_TOKEN}@github.com/"
-          fi
-          engine_url="${engine_url}spalen0/safe-propose.git@${SAFE_PROPOSE_REF}"
+          engine_url="git+https://github.com/spalen0/safe-propose.git@${SAFE_PROPOSE_REF}"
           python -m pip install "safe-propose @ ${engine_url}"
 
       # issue_comment starts on the default branch. Use only the verified PR commit.
@@ -256,7 +248,6 @@ jobs:
           # what keep later RPC/proposer secrets away from untrusted PR code.
           GITHUB_TOKEN: ""
           GH_TOKEN: ""
-          SAFE_PROPOSE_TOKEN: ""
           SAFE_PROPOSE_REF: ${{ vars.SAFE_PROPOSE_REF }}
         run: |
           set -euo pipefail
