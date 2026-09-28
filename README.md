@@ -4,26 +4,12 @@ A modern, maintained **Python engine + CLI** for building, simulating, and propo
 Gnosis **Safe** transactions to the Safe Transaction Service — built on
 [Ape (ApeWorX)](https://github.com/ApeWorX/ape) + [`ape-safe`](https://github.com/ApeWorX/ape-safe).
 
-It is a **redundant, independent alternative** to the GitHub-Actions / "roboanimals"
+It is an **independent alternative** to the GitHub-Actions / "roboanimals"
 flow used in the Yearn multisig repos (which is built on EOL `eth-brownie` +
 `multisig-ci` and hung during a Katana dry run). The engine under `src/safe_propose/`
 holds **no per-safe data**. Each consuming multisig repo keeps its own transaction
 definitions and chain config; the engine loads them, simulates, shows the diff, and
 proposes via a delegate key. This repo includes reference examples for that contract.
-
-## Why this exists
-
-The existing roboanimals path:
-- depends on **EOL `eth-brownie` 1.21** + a custom `multisig-ci@wavey_edit` fork,
-- predates new chains (no Katana/747474 in its chain tables),
-- has **no HTTP timeouts**, so a stalled external call (RPC fork or Safe Tx Service)
-  hangs the run indefinitely instead of failing fast.
-
-`safe-propose` fixes both by construction: Ape/`ape-safe` are maintained, modern
-`safe-eth-py` 7.x already supports Katana, and all HTTP has a default 10s timeout.
-
-See [`docs/BACKGROUND.md`](docs/BACKGROUND.md) for the full incident analysis that
-motivated this repo.
 
 ## What it does
 
