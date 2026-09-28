@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "safe-propose"
+version = "0.1.0"
+description = "Modern Python engine + CLI to build, simulate, and propose Gnosis Safe transactions to the Safe Transaction Service."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Yearn" }]
+keywords = ["safe", "gnosis", "ape", "multisig", "katana", "ethereum"]
+
+# Pinned to a maintained stack (the whole point of this repo): Ape + ape-safe +
+# safe-eth-py 7.x, which knows Katana and defaults all Tx Service HTTP to a timeout.
+dependencies = [
+    "eth-ape>=0.8,<0.9",
+    "ape-safe>=0.8,<0.9",
+    "ape-etherscan>=0.8,<0.9",
+    "click>=8.1",
+    "requests>=2.31",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    # >=0.16: the formatter checks Python code blocks in Markdown (docs/*.md),
+    # so local ruff and CI agree on what "formatted" means.
+    "ruff>=0.16",
+    # ape-foundry (anvil) is needed for the forked-chain `live` integration tests; the
+    # anvil binary itself must be installed separately (foundryup).
+    "ape-foundry>=0.8,<0.9",
+]
+
+[project.scripts]
+safe-propose = "safe_propose.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/spalen0/safe-propose"
+Repository = "https://github.com/spalen0/safe-propose"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/safe_propose"]
+
+[tool.uv]
+# Supply-chain hardening: never resolve packages uploaded less than 7 days ago.
+# Mirrors the min-release-age rule used elsewhere. Also settable via
+# UV_EXCLUDE_NEWER=1 week. Accepts a friendly duration or ISO 8601 (e.g. "P7D").
+exclude-newer = "1 week"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py311"
+
+[tool.ruff.lint]
+# pycodestyle errors/warnings, pyflakes, isort, pyupgrade, flake8-bugbear.
+select = ["E", "W", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["safe_propose"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# web3 7 imports this upstream legacy module even when using only synchronous HTTP.
+filterwarnings = [
+    "ignore:websockets.legacy is deprecated:DeprecationWarning:websockets.legacy",
+]
+# Marker for tests that touch a live RPC / Tx Service; excluded from default CI runs.
+markers = [
+    "live: tests that require live network access (RPC, Tx Service); deselected by default",
+]

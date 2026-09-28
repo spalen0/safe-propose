@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          # Single, current version supported across the Ape stack (eth-ape 0.8.x).
+          python-version: "3.12"
+
+      - name: Set up uv
+        # setup-uv publishes no moving major tag (only exact releases) past v8.
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Install
+        # From the committed uv.lock, so CI runs the exact versions local dev does
+        # (also applies the [tool.uv] exclude-newer supply-chain gate).
+        run: uv sync --locked --extra dev
+
+      - name: Lint
+        run: |
+          uv run --no-sync ruff check .
+          uv run --no-sync ruff format --check .
+
+      - name: Test
+        # 'live' tests need real RPC / Tx Service credentials and are excluded in CI.
+        run: uv run --no-sync pytest -m "not live"

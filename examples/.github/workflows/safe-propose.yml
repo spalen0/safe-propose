@@ -1,0 +1,339 @@
+# Reference GitHub Actions workflow for a CONSUMING multisig repo.
+#
+# Tx definitions default to scripts/safe_txs.py (override with --txs-file).
+# Drop this into the consuming repo's .github/workflows/. It mirrors the roboanimals
+# PR-comment UX as a redundant, independent path: comment on a PR with
+#
+#     /safe-propose fn=<name> network=<net> send=<true|false> sha=<40-char-hex>
+#
+# ``send=true`` comments must include ``sha=`` matching the current PR head so a later
+# push cannot ride an earlier approval. Dry-run may omit ``sha=`` (uses current HEAD).
+#
+# and the workflow runs `safe-propose dry-run` (always, posting the simulation +
+# safe_tx_hash back to the PR) and, when send=true, `safe-propose send`
+# (sign with the delegate + propose to the Safe Tx Service). Also triggerable manually via
+# the Actions tab (workflow_dispatch).
+#
+# Required repo secrets:
+#   SAFE_PROPOSE_TOKEN          read-only engine repo access; only while it is private
+#   PROPOSER_PRIVATE_KEY        delegate/proposer key (must be an owner or registered delegate)
+#   <NET>_RPC                   per-network RPC (never commit a URL with a key)
+#   APE_SAFE_GATEWAY_API_KEY    gateway chains (incl. HyperEVM, Robinhood); Katana/RISE are keyless
+#   TELEGRAM_TOKEN              optional; `send --notify`
+#   *SCAN_TOKEN                 explorer tokens for built-in chains, if used
+# Required repo variables:
+#   SAFE_PROPOSE_REF            reviewed 40-character engine commit SHA
+#   <NET>_SAFE_ADDRESS          e.g. ETH_SAFE_ADDRESS (fallback) / KATANA_SAFE_ADDRESS
+#   TELEGRAM_CHAT_ID            optional; `send --notify`
+#
+# SECURITY: only commenters with write/maintain/admin on this repository can trigger
+# this — a delegate key proposes real transactions, so untrusted commenters must never
+# reach the send path. ``author_association`` MEMBER is only a pre-filter (org membership);
+# the job then checks the commenter's actual repository permission.
+# A comment may target someone else's PR. Require its head to be in this repository and
+# pin the checkout to that SHA. ``send=true`` comments must include ``sha=`` equal to the
+# current PR head so a later push cannot ride an earlier approval.
+# Pass ``SAFE_PROPOSE_PR`` because a SHA checkout is
+# detached and ``gh pr view`` cannot infer the PR from a branch name.
+# The engine is installed from a reviewed commit before any PR checkout, and the
+# job fails if the PR's requirements.txt replaces that build.
+
+name: safe-propose
+
+on:
+  workflow_dispatch:
+    inputs:
+      fn:
+        description: "@txn function name"
+        required: true
+      network:
+        description: "target network"
+        default: katana
+      send:
+        description: "propose to the Safe queue (else dry-run only)"
+        type: boolean
+        default: false
+  issue_comment:
+    types: [created]
+
+# A delegate key signs here; keep the token least-privileged. `pull-requests: write` lets
+# the CLI post the dry-run comment and close the PR; `issues: write` allows label creation and
+# lets `--reminder` open
+# the re-evaluation issue.
+permissions:
+  contents: write  # Delete the source branch after closing the PR and notifications.
+  pull-requests: write
+  issues: write
+
+jobs:
+  safe-propose:
+    # Run for manual dispatch, or for an authorized `/safe-propose` comment on a PR.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.pull_request != null &&
+       startsWith(github.event.comment.body, '/safe-propose') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    # Addresses are public on-chain identifiers (repo vars), not credentials.
+    # RPC / gateway / proposer tokens stay off job-level env so a
+    # PR-controlled pip install cannot inherit them.
+    env:
+      ETH_SAFE_ADDRESS: ${{ vars.ETH_SAFE_ADDRESS }}
+      BASE_SAFE_ADDRESS: ${{ vars.BASE_SAFE_ADDRESS }}
+      ARB_SAFE_ADDRESS: ${{ vars.ARB_SAFE_ADDRESS }}
+      OP_SAFE_ADDRESS: ${{ vars.OP_SAFE_ADDRESS }}
+      HYPEREVM_SAFE_ADDRESS: ${{ vars.HYPEREVM_SAFE_ADDRESS }}
+      KATANA_SAFE_ADDRESS: ${{ vars.KATANA_SAFE_ADDRESS }}
+      RISE_SAFE_ADDRESS: ${{ vars.RISE_SAFE_ADDRESS }}
+      ROBINHOOD_SAFE_ADDRESS: ${{ vars.ROBINHOOD_SAFE_ADDRESS }}
+    steps:
+      - name: Parse request
+        id: req
+        env:
+          BODY: ${{ github.event.comment.body }}
+          INPUT_FN: ${{ github.event.inputs.fn }}
+          INPUT_NETWORK: ${{ github.event.inputs.network }}
+          INPUT_SEND: ${{ github.event.inputs.send }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            fn="$INPUT_FN"
+            network="$INPUT_NETWORK"
+            send="$INPUT_SEND"
+          else
+            # Parse "/safe-propose fn=x network=y send=true sha=<40-hex>" from the comment.
+            fn=$(printf '%s' "$BODY" | grep -oE 'fn=[^ ]+' | head -1 | cut -d= -f2 || true)
+            network=$(printf '%s' "$BODY" | grep -oE 'network=[^ ]+' | head -1 | cut -d= -f2 || true)
+            send=$(printf '%s' "$BODY" | grep -oE 'send=[^ ]+' | head -1 | cut -d= -f2 || true)
+            sha=$(printf '%s' "$BODY" | grep -oE 'sha=[0-9a-fA-F]+' | head -1 | cut -d= -f2 || true)
+            network=${network:-katana}
+            send=${send:-false}
+          fi
+          # GitHub comment bodies are CRLF; a trailing CR fails the identifier checks.
+          fn=$(printf '%s' "$fn" | tr -d '\r')
+          network=$(printf '%s' "$network" | tr -d '\r')
+          send=$(printf '%s' "$send" | tr -d '\r')
+          sha=$(printf '%s' "${sha:-}" | tr -d '\r' | tr '[:upper:]' '[:lower:]')
+          [ -n "$fn" ] || { echo "::error::missing fn"; exit 1; }
+          # Restrict values written to GITHUB_OUTPUT / later argv so a comment or
+          # workflow_dispatch input cannot inject extra output keys or shell words.
+          if [[ ! "$fn" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            echo "::error::fn must be a Python identifier"
+            exit 1
+          fi
+          if [[ ! "$network" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]]; then
+            echo "::error::invalid network"
+            exit 1
+          fi
+          send=$(printf '%s' "$send" | tr '[:upper:]' '[:lower:]')
+          case "$send" in
+            true|false) ;;
+            *) echo "::error::send must be true or false"; exit 1 ;;
+          esac
+          if [ "$GITHUB_EVENT_NAME" = "issue_comment" ] && [ "$send" = "true" ]; then
+            if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::send=true requires sha=<40-char hex> of the PR head you reviewed."
+              exit 1
+            fi
+          fi
+          {
+            printf 'fn=%s\n' "$fn"
+            printf 'network=%s\n' "$network"
+            printf 'send=%s\n' "$send"
+            printf 'comment_sha=%s\n' "$sha"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved: fn=$fn network=$network send=$send"
+
+      - name: Authorize commenter
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          perm=$(timeout 20s gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" \
+            --jq '.permission' || true)
+          case "$perm" in
+            admin|maintain|write) ;;
+            *)
+              echo "::error::Commenter ${ACTOR} needs write access to this repository."
+              exit 1
+              ;;
+          esac
+
+      - name: Verify PR source
+        if: github.event_name == 'issue_comment'
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_SHA: ${{ steps.req.outputs.comment_sha }}
+          SEND: ${{ steps.req.outputs.send }}
+        run: |
+          set -euo pipefail
+          metadata=$(timeout 20s gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            --jq '[.head.repo.id // "null", .base.repo.id // "null", .head.sha // ""] | @tsv')
+          IFS=$'\t' read -r head_repo_id base_repo_id head_sha <<< "$metadata"
+          if [[ "$head_repo_id" == "null" || "$head_repo_id" != "$base_repo_id" ]]; then
+            echo "::error::Only PR branches in this repository can run with secrets."
+            exit 1
+          fi
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::PR head SHA is invalid."
+            exit 1
+          fi
+          if [[ "$COMMENT_SHA" =~ ^[0-9a-f]{40}$ && "$COMMENT_SHA" != "$head_sha" ]]; then
+            echo "::error::Comment sha=${COMMENT_SHA} does not match PR head ${head_sha}. Re-comment."
+            exit 1
+          fi
+          if [ "$SEND" = "true" ] && [[ ! "$COMMENT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::send=true requires sha=<40-char hex> matching the current PR head."
+            exit 1
+          fi
+          echo "sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # anvil, for the forked-chain simulation in dry-run / pre-send checks.
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09  # v1.9.1
+
+      - name: Install engine
+        env:
+          SAFE_PROPOSE_REF: ${{ vars.SAFE_PROPOSE_REF }}
+          SAFE_PROPOSE_TOKEN: ${{ secrets.SAFE_PROPOSE_TOKEN }}
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+        run: |
+          set -euo pipefail
+          SAFE_PROPOSE_REF=$(printf '%s' "$SAFE_PROPOSE_REF" | tr '[:upper:]' '[:lower:]')
+          if [[ ! "$SAFE_PROPOSE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Set SAFE_PROPOSE_REF to a reviewed 40-character engine commit SHA."
+            exit 1
+          fi
+          python -m pip install --upgrade pip
+          # Runs on the default-branch checkout, before any PR tree is checked out.
+          # The token is only needed while the engine repo is private; leave the
+          # secret unset once it is public.
+          engine_url="git+https://github.com/"
+          if [ -n "${SAFE_PROPOSE_TOKEN:-}" ]; then
+            engine_url="git+https://x-access-token:${SAFE_PROPOSE_TOKEN}@github.com/"
+          fi
+          engine_url="${engine_url}spalen0/safe-propose.git@${SAFE_PROPOSE_REF}"
+          python -m pip install "safe-propose @ ${engine_url}"
+
+      # issue_comment starts on the default branch. Use only the verified PR commit.
+      # fetch-depth 0 keeps merge-base history for the three-dot code diff.
+      - name: Check out verified PR commit
+        if: github.event_name == 'issue_comment'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Confirm verified PR commit
+        if: github.event_name == 'issue_comment'
+        env:
+          EXPECTED_SHA: ${{ steps.pr.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$EXPECTED_SHA" ]; then
+            echo "::error::Checked-out commit differs from the verified PR head."
+            exit 1
+          fi
+
+      - name: Install consuming-repo deps
+        env:
+          # Unset so requirements.txt cannot exfiltrate GitHub tokens at install time.
+          # Packages stay in the environment; same-repo + write-permission checks are
+          # what keep later RPC/proposer secrets away from untrusted PR code.
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+          SAFE_PROPOSE_TOKEN: ""
+          SAFE_PROPOSE_REF: ${{ vars.SAFE_PROPOSE_REF }}
+        run: |
+          set -euo pipefail
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          # requirements.txt must not replace the reviewed engine build.
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from importlib.metadata import distribution
+
+          raw = distribution("safe-propose").read_text("direct_url.json") or "{}"
+          commit = (json.loads(raw).get("vcs_info") or {}).get("commit_id", "")
+          expected = os.environ["SAFE_PROPOSE_REF"].lower()
+          if commit != expected:
+              found = commit or "a non-git build"
+              print(f"::error::safe-propose is {found}, not SAFE_PROPOSE_REF {expected}.")
+              print("::error::Remove safe-propose from requirements.txt.")
+              sys.exit(1)
+          PY
+
+      # GitHub Actions accepts YAML anchors/aliases but rejects mapping merge keys,
+      # so Dry-run and Send list env explicitly instead of merging an anchor.
+      - name: Dry-run (always) — posts the block to the PR
+        env:
+          ETH_RPC: ${{ secrets.ETH_RPC }}
+          BASE_RPC: ${{ secrets.BASE_RPC }}
+          ARB_RPC: ${{ secrets.ARB_RPC }}
+          OP_RPC: ${{ secrets.OP_RPC }}
+          HYPEREVM_RPC: ${{ secrets.HYPEREVM_RPC }}
+          KATANA_RPC: ${{ secrets.KATANA_RPC }}
+          RISE_RPC: ${{ secrets.RISE_RPC }}
+          ROBINHOOD_RPC: ${{ secrets.ROBINHOOD_RPC }}
+          APE_SAFE_GATEWAY_API_KEY: ${{ secrets.APE_SAFE_GATEWAY_API_KEY }}
+          ETHERSCAN_TOKEN: ${{ secrets.ETHERSCAN_TOKEN }}
+          BASESCAN_TOKEN: ${{ secrets.BASESCAN_TOKEN }}
+          ARBISCAN_TOKEN: ${{ secrets.ARBISCAN_TOKEN }}
+          OPTIMISTIC_ETHERSCAN_TOKEN: ${{ secrets.OPTIMISTIC_ETHERSCAN_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          FN: ${{ steps.req.outputs.fn }}
+          NETWORK: ${{ steps.req.outputs.network }}
+          SAFE_PROPOSE_PR: ${{ github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$GITHUB_EVENT_NAME" = "issue_comment" ]; then
+            args+=(--post-comment --base "origin/${DEFAULT_BRANCH}")
+          fi
+          safe-propose dry-run --fn "$FN" --network "$NETWORK" "${args[@]}"
+
+      - name: Send (only when send=true) — propose to the Safe queue
+        if: steps.req.outputs.send == 'true'
+        env:
+          ETH_RPC: ${{ secrets.ETH_RPC }}
+          BASE_RPC: ${{ secrets.BASE_RPC }}
+          ARB_RPC: ${{ secrets.ARB_RPC }}
+          OP_RPC: ${{ secrets.OP_RPC }}
+          HYPEREVM_RPC: ${{ secrets.HYPEREVM_RPC }}
+          KATANA_RPC: ${{ secrets.KATANA_RPC }}
+          RISE_RPC: ${{ secrets.RISE_RPC }}
+          ROBINHOOD_RPC: ${{ secrets.ROBINHOOD_RPC }}
+          APE_SAFE_GATEWAY_API_KEY: ${{ secrets.APE_SAFE_GATEWAY_API_KEY }}
+          ETHERSCAN_TOKEN: ${{ secrets.ETHERSCAN_TOKEN }}
+          BASESCAN_TOKEN: ${{ secrets.BASESCAN_TOKEN }}
+          ARBISCAN_TOKEN: ${{ secrets.ARBISCAN_TOKEN }}
+          OPTIMISTIC_ETHERSCAN_TOKEN: ${{ secrets.OPTIMISTIC_ETHERSCAN_TOKEN }}
+          PROPOSER_PRIVATE_KEY: ${{ secrets.PROPOSER_PRIVATE_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          FN: ${{ steps.req.outputs.fn }}
+          NETWORK: ${{ steps.req.outputs.network }}
+          SAFE_PROPOSE_PR: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          safe-propose send --fn "$FN" --network "$NETWORK" \
+            --yes --close-pr --notify --reminder

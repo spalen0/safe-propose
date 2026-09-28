@@ -1,0 +1,52 @@
+# Reference ape-config.yaml for a consuming multisig repo.
+#
+# Every target chain is declared as a CUSTOM Ape network (base_ecosystem_plugin: ethereum)
+# and connected via the `node` provider with a per-chain ${<PREFIX>_RPC}. This needs no
+# per-chain Ape plugin and is uniform across chains. `safe-propose dry-run` forks each via
+# foundry. Supported networks (and their env prefixes / Safe tx-service):
+#   ethereum (ETH, gateway)   base (BASE, gateway)   arbitrum (ARB, gateway)
+#   optimism (OP, gateway)    katana (KATANA, standalone override)
+#   hyperevm (HYPEREVM, gateway → api.safe.global/tx-service/hyper/api)
+#   rise (RISE, standalone override → multisig-txs.risechain.com)
+#   robinhood (ROBINHOOD, gateway → api.safe.global/tx-service/robinhood/api)
+
+name: sam-curator-multisig
+
+plugins:
+  - name: safe
+  - name: foundry
+
+networks:
+  # ethereum:mainnet is a core Ape network (no custom entry needed) — just give it a URI
+  # under `node:` below. The rest are custom networks.
+  custom:
+    - {name: mainnet, ecosystem: base, chain_id: 8453, base_ecosystem_plugin: ethereum}
+    - {name: mainnet, ecosystem: arbitrum, chain_id: 42161, base_ecosystem_plugin: ethereum}
+    - {name: mainnet, ecosystem: optimism, chain_id: 10, base_ecosystem_plugin: ethereum}
+    - {name: mainnet, ecosystem: hyperevm, chain_id: 999, base_ecosystem_plugin: ethereum}
+    - {name: mainnet, ecosystem: katana, chain_id: 747474, base_ecosystem_plugin: ethereum}
+    - {name: mainnet, ecosystem: rise, chain_id: 4153, base_ecosystem_plugin: ethereum}
+    - {name: mainnet, ecosystem: robinhood, chain_id: 4663, base_ecosystem_plugin: ethereum}
+
+# Provider URIs — env interpolation only; never commit a URL with a key.
+node:
+  ethereum: {mainnet: {uri: "${ETH_RPC}"}}
+  base: {mainnet: {uri: "${BASE_RPC}"}}
+  arbitrum: {mainnet: {uri: "${ARB_RPC}"}}
+  optimism: {mainnet: {uri: "${OP_RPC}"}}
+  hyperevm: {mainnet: {uri: "${HYPEREVM_RPC}"}}
+  katana: {mainnet: {uri: "${KATANA_RPC}"}}
+  rise: {mainnet: {uri: "${RISE_RPC}"}}
+  robinhood: {mainnet: {uri: "${ROBINHOOD_RPC}"}}
+
+# dry-run simulates on a foundry fork of the live node, per chain.
+foundry:
+  fork:
+    ethereum: {mainnet: {upstream_provider: node}}
+    base: {mainnet: {upstream_provider: node}}
+    arbitrum: {mainnet: {upstream_provider: node}}
+    optimism: {mainnet: {upstream_provider: node}}
+    hyperevm: {mainnet: {upstream_provider: node}}
+    katana: {mainnet: {upstream_provider: node}}
+    rise: {mainnet: {upstream_provider: node}}
+    robinhood: {mainnet: {upstream_provider: node}}

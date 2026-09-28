@@ -1,0 +1,32 @@
+# secrets — NEVER commit keys
+.env
+*.env
+.env.*
+# Keep the documented template tracked.
+!.env.example
+secrets.*
+*.key
+*.pem
+# Ape keyfiles and local linked worktrees.
+.ape/
+.claude/worktrees/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.eggs/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
