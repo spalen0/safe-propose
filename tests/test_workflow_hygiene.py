@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,6 +89,13 @@ def test_example_workflow_installs_engine_before_pr_checkout():
     assert "SAFE_PROPOSE_REF: ${{ vars.SAFE_PROPOSE_REF }}" in deps_step
     pin_check = 'distribution("safe-propose").read_text("direct_url.json")'
     assert deps_step.index("pip install -r requirements.txt") < deps_step.index(pin_check)
+
+
+def test_engine_install_brings_fork_provider():
+    # The workflow installs only the pinned engine before the PR checkout; dry-run and
+    # send fork through ape-foundry, so it must be a runtime dependency, not a PR's choice.
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    assert any(dep.startswith("ape-foundry") for dep in project["dependencies"])
 
 
 def _run_engine_install(tmp_path: Path, ref: str) -> subprocess.CompletedProcess:

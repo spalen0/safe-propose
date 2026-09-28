@@ -2719,6 +2719,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "ape-etherscan" },
+    { name = "ape-foundry" },
     { name = "ape-safe" },
     { name = "click" },
     { name = "eth-ape" },
@@ -2728,7 +2729,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "ape-foundry" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -2737,7 +2737,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "ape-etherscan", specifier = ">=0.8,<0.9" },
-    { name = "ape-foundry", marker = "extra == 'dev'", specifier = ">=0.8,<0.9" },
+    { name = "ape-foundry", specifier = ">=0.8,<0.9" },
     { name = "ape-safe", specifier = ">=0.8,<0.9" },
     { name = "click", specifier = ">=8.1" },
     { name = "eth-ape", specifier = ">=0.8,<0.9" },

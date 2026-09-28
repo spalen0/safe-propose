@@ -57,7 +57,7 @@ simulate / diff / propose        GitHub secrets / env  # delegate key, RPCs, API
 your-multisig-repo/
   scripts/safe_txs.py                   # @txn transaction definitions
   ape-config.yaml                       # copy of examples/ape-config.yaml
-  requirements.txt                      # ape-foundry (the dry-run fork provider)
+  requirements.txt                      # optional: extra deps for your tx definitions
   .github/workflows/safe-propose.yml    # copy of examples/.github/workflows/safe-propose.yml
 ```
 
@@ -82,9 +82,10 @@ your-multisig-repo/
 - **`ape-config.yaml`** — copy [`examples/ape-config.yaml`](examples/ape-config.yaml) and
   delete the chains you do not use. Keep the `safe` and `foundry` plugins, and keep each
   chain's `custom`, `node`, and `foundry.fork` entries together.
-- **`requirements.txt`** — must include `ape-foundry>=0.8,<0.9`; dry-run forks through
-  it. Do **not** list `safe-propose` here: the workflow installs the engine itself and
-  fails if `requirements.txt` replaces that build.
+- **`requirements.txt`** — optional, for anything your tx definitions import. The engine
+  already brings Ape, `ape-safe`, and `ape-foundry`. Do **not** list `safe-propose` here:
+  the workflow installs the engine itself and fails if `requirements.txt` replaces that
+  build.
 - **`.github/workflows/safe-propose.yml`** — copy the template unchanged, then adjust the
   `workflow_dispatch` default network if Katana is not your main chain.
 
@@ -144,8 +145,7 @@ for sending.
 ### Running locally
 
 ```bash
-python -m pip install "safe-propose @ git+https://github.com/spalen0/safe-propose.git@master" \
-  "ape-foundry>=0.8,<0.9"
+python -m pip install "safe-propose @ git+https://github.com/spalen0/safe-propose.git@master"
 # plus the anvil binary: https://book.getfoundry.sh/getting-started/installation
 export KATANA_RPC=... KATANA_SAFE_ADDRESS=0x...   # same names as the table above
 safe-propose dry-run --fn katana_caps --network katana
