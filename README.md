@@ -51,149 +51,126 @@ safe-propose send    --fn <name> --network <net>                    # sign with 
   e.g. to **replace** a tx already queued at that nonce (the roboanimals `nonce_arg`
   equivalent). Never silently hangs — all network calls are time-bounded.
 
-## How it fits with a multisig repo
+## Integrating into a multisig repo
+
+The engine holds no per-safe data. A consuming multisig repo supplies the transaction
+definitions, the chain config, and the secrets; the engine loads them from the repo's
+working directory.
 
 ```
-safe-propose (this repo)         consuming multisig repo (e.g. sam-curator-multisig)
+safe-propose (this repo)         consuming multisig repo
 ─────────────────────────        ────────────────────────────────────────────────
-engine + CLI (generic)   <────   scripts/safe_txs.py  # tx definitions (@txn fns)
-loads tx defs by name            ape-config.yaml # networks (incl. custom Katana)
-simulate / diff / propose        .env / keyfile  # delegate key, RPC, API keys
+engine + CLI (generic)   <────   scripts/safe_txs.py   # tx definitions (@txn fns)
+loads tx defs by name            ape-config.yaml       # networks you use
+simulate / diff / propose        GitHub secrets / env  # delegate key, RPCs, API keys
 ```
 
-Install it into a multisig repo and run the CLI from that repo's PR branch:
+### 1. Add these files
+
+```
+your-multisig-repo/
+  scripts/safe_txs.py                   # @txn transaction definitions
+  ape-config.yaml                       # copy of examples/ape-config.yaml
+  requirements.txt                      # ape-foundry (the dry-run fork provider)
+  .github/workflows/safe-propose.yml    # copy of examples/.github/workflows/safe-propose.yml
+```
+
+- **`scripts/safe_txs.py`** — one `@txn` function per transaction. The function name is
+  what you pass as `fn=` / `--fn`; its docstring is the fallback description. See
+  [`examples/scripts/safe_txs.py`](examples/scripts/safe_txs.py):
+
+  ```python
+  from safe_propose import txn
+
+
+  @txn
+  def katana_caps(batch, ctx):
+      """Submit Morpho supply caps for the Katana vaults."""
+      vault = ctx.contract("0x...")
+      batch.add(vault.submitCap, market_params, 6_000_000 * 10**6)
+  ```
+
+  `ctx.contract(address, abi=None)` returns an Ape contract; pass `abi=` on chains without
+  an explorer (Katana). Constants for `ctx.const` load from `constants.py` if present
+  (`--constants-file` to override). Use `--txs-file` for a definitions module elsewhere.
+- **`ape-config.yaml`** — copy [`examples/ape-config.yaml`](examples/ape-config.yaml) and
+  delete the chains you do not use. Keep the `safe` and `foundry` plugins, and keep each
+  chain's `custom`, `node`, and `foundry.fork` entries together.
+- **`requirements.txt`** — must include `ape-foundry>=0.8,<0.9`; dry-run forks through
+  it. Do **not** list `safe-propose` here: the workflow installs the engine itself and
+  fails if `requirements.txt` replaces that build.
+- **`.github/workflows/safe-propose.yml`** — copy the template unchanged, then adjust the
+  `workflow_dispatch` default network if Katana is not your main chain.
+
+### 2. Pin the engine commit
+
+Set the repository variable `SAFE_PROPOSE_REF` to a reviewed 40-character commit SHA of
+this repository. It is the only place the engine version is pinned; bump it to upgrade:
 
 ```bash
-python -m pip install "safe-propose @ git+https://github.com/spalen0/safe-propose.git@master"
+git ls-remote https://github.com/spalen0/safe-propose.git master
 ```
 
-For automation, pin a reviewed 40-character commit SHA. The consuming-repo workflow
-template (`examples/.github/workflows/safe-propose.yml`) reads that SHA from the
-`SAFE_PROPOSE_REF` repository variable — the single place the engine version is pinned —
-and fails if the PR's `requirements.txt` replaces that build, so do not list
-`safe-propose` there. Do not commit a filled `.env`.
+### 3. Register the proposer
 
-Tx definitions are loaded from **`scripts/safe_txs.py`** by default. Point at another
-module with `--txs-file`:
+`send` signs with `PROPOSER_PRIVATE_KEY`. That address must be an **owner** or a
+**registered delegate** of the Safe on every chain you send on — delegates are registered
+per chain. Register it in the Safe web app or with `ape safe delegates add`. Dry-run
+needs no proposer.
+
+### 4. Set secrets and variables
+
+Settings → Secrets and variables → Actions. Set only the rows for the chains you use.
+
+**Secrets**
+
+| Name | Needed for | Purpose |
+|---|---|---|
+| `PROPOSER_PRIVATE_KEY` | `send` | Owner or registered delegate key that proposes the transaction. |
+| `<PREFIX>_RPC` | each chain you use | Fork-capable RPC URL (anvil forks it for simulation). One per chain: `ETH_RPC`, `BASE_RPC`, `ARB_RPC`, `OP_RPC`, `HYPEREVM_RPC`, `KATANA_RPC`, `RISE_RPC`, `ROBINHOOD_RPC`. |
+| `APE_SAFE_GATEWAY_API_KEY` | `send` on gateway chains | Safe API key for `api.safe.global` (Ethereum, Base, Arbitrum, Optimism, HyperEVM, Robinhood). Not needed for Katana or RISE. |
+| `ETHERSCAN_TOKEN`, `BASESCAN_TOKEN`, `ARBISCAN_TOKEN`, `OPTIMISTIC_ETHERSCAN_TOKEN` | optional | Explorer ABI lookups for `ctx.contract` without `abi=`. |
+| `TELEGRAM_TOKEN` | optional | Bot token for the "tx queued" message (`send --notify`). |
+
+**Variables**
+
+| Name | Needed for | Purpose |
+|---|---|---|
+| `SAFE_PROPOSE_REF` | always | Engine commit SHA (step 2). |
+| `ETH_SAFE_ADDRESS` | fallback | Safe address used for any chain without its own `<PREFIX>_SAFE_ADDRESS`. |
+| `<PREFIX>_SAFE_ADDRESS` | each chain whose Safe differs | e.g. `KATANA_SAFE_ADDRESS`. Set it explicitly on new chains; the CLI warns when it falls back to `ETH_SAFE_ADDRESS`. |
+| `TELEGRAM_CHAT_ID` | optional | Telegram group id for `send --notify`. |
+
+The workflow uses the built-in `GITHUB_TOKEN` for PR comments, labels, closing the PR,
+the reminder issue, and branch deletion — no personal access token is needed.
+
+### 5. Try it
+
+Open a PR that adds a `@txn` function and comment:
+
+```
+/safe-propose fn=<name> network=<net> send=false
+```
+
+The dry-run report is posted back to the PR. See [Running from a PR](#running-from-a-pr)
+for sending.
+
+### Running locally
 
 ```bash
-safe-propose dry-run --fn katana_caps --network katana
-safe-propose dry-run --fn katana_caps --network katana --txs-file path/to/other_txs.py
-```
-
-Constants for `ctx.const` still default to `constants.py` (`--constants-file` to override;
-a missing file is fine).
-
-### Robinhood Chain mainnet
-
-Use `--network robinhood` (or `robinhoodchain`) for chain ID 4663. In the consuming
-repo, declare the `robinhood` custom network, node URI, and foundry fork as shown in
-[`examples/ape-config.yaml`](examples/ape-config.yaml). Set `ROBINHOOD_RPC` and
-`ROBINHOOD_SAFE_ADDRESS` in the untracked env. Set it explicitly: when it is unset the
-engine falls back to `ETH_SAFE_ADDRESS` (and prints a warning), and a new chain's Safe is
-rarely at the Ethereum address. The RPC should support forked simulation.
-
-`send` uses Safe's gateway at `https://api.safe.global/tx-service/robinhood/api` and
-requires `APE_SAFE_GATEWAY_API_KEY`, as on the other gateway chains. Its queue link uses
-the Safe prefix `robinhood` (`app.safe.global/...?safe=robinhood:0x...`).
-No Robinhood Safe address or transaction definition is bundled with the engine.
-
-## Repo layout
-
-```
-safe-propose/
-  README.md
-  LICENSE                    # GNU AGPL v3 or later
-  AGENTS.md                  # working agreement for agents/contributors
-  pyproject.toml             # package + console entrypoint + dependency ranges
-  src/safe_propose/
-    __init__.py              # exports `txn`
-    registry.py              # @txn decorator + name registry
-    loader.py                # load consuming repo's scripts/safe_txs.py / constants.py
-    context.py               # the frozen `ctx` handed to tx definitions
-    config.py                # resolve network/safe/tx-service/account config
-    txservice.py             # Safe Tx Service / gateway resolution + override_url
-    engine.py                # build batch, build SafeTx, pre-flight
-    runtime.py               # Ape connection, Safe load + ABI injection, propose
-    render.py                # diff + simulation + full calldata block, PR-comment body
-    gitutil.py               # git diff + gh PR detect/comment (timeout-bounded)
-    notify.py                # PR nonce label + Telegram "tx queued" message
-    reminder.py              # open a "re-evaluate" issue assigned to the PR author
-    selectors.py             # 4-byte `.selector` on Ape method handlers
-    cli.py                   # click CLI: dry-run / send
-  scripts/
-    local_demo.py            # `make demo-local`: deploy a Safe on a fork, sign + execute
-    deploy_test_safe.py      # deploy a throwaway test Safe on live Katana
-  tests/                     # unit (mocked) + tests/live/ (marked `live`); see docs/TEST_PLAN.md
-  docs/
-    BACKGROUND.md            # incident analysis (why this repo exists)
-    ARCHITECTURE.md          # design, data flow, the tx-definition contract, spike findings
-    IMPLEMENTATION_PLAN.md   # milestones + discrete tasks (agent-ready)
-    TEST_PLAN.md             # unit / integration / e2e test strategy
-    RUNBOOK.md               # operator flow: local → dry-run → gated live send
-  examples/
-    scripts/safe_txs.py      # reference tx-definition module (consuming-repo layout)
-    ape-config.yaml          # reference config incl. custom Katana network
-    .env.example             # required env (RPC, safe addr, proposer, telegram, …)
-    .github/workflows/safe-propose.yml   # drop-in PR-comment workflow (roboanimals parity)
-```
-
-## Status
-
-**Engine complete and proven end-to-end on Katana.** Implemented, tested, and merged:
-scaffold, the `@txn`/loader/`ctx` contract, config + tx-service resolution, build +
-pre-flight simulation, the `dry-run` / `send` CLI (with `--post-comment`, full
-calldata for signer verification, PR-label, and a roboanimals-style Telegram message),
-the GitHub Actions workflow template, and a local MVP (`make demo-local`).
-
-Verified live: foundry forks Katana in ~7s (the incident's hang step), the engine's
-offline `safe_tx_hash` matches the Safe's on-chain `getTransactionHash`, a real tx was
-**proposed to the live Katana Safe Tx Service** (queued on a test safe via the delegate),
-and a reverting tx is **rejected by the pre-flight before it can be queued**. The Katana
-read + the delegate's registration (Tasks 02b/02c) are confirmed against the live service.
-
-**Remaining:** integration into the consuming multisig repos (Tasks 11/13 — landing
-`scripts/safe_txs.py`/`ape-config.yaml`/the workflow in `sam-curator-multisig` / `sam-multisig`
-and a real Actions run). See `docs/ARCHITECTURE.md` for the recorded findings, `docs/RUNBOOK.md`
-for the operator flow, and `tasks/*.md` for per-task acceptance status.
-
-## Try it locally (MVP)
-
-Prove the whole build→sign→land pipeline against a Safe, **locally**, with no external
-Safe Transaction Service: it forks the chain with anvil, deploys a throwaway **1-of-1
-Safe you own**, builds a tx through the engine, signs as the owner, and executes it
-on-chain — then reads the result back.
-
-```bash
-uv sync --extra dev            # eth-ape, ape-safe, ape-foundry (from uv.lock)
+python -m pip install "safe-propose @ git+https://github.com/spalen0/safe-propose.git@master" \
+  "ape-foundry>=0.8,<0.9"
 # plus the anvil binary: https://book.getfoundry.sh/getting-started/installation
-export KATANA_RPC=...       # or KATANA_RPC_2 — a fork-capable Katana RPC
-make demo-local                 # python scripts/local_demo.py
-# → [4/5] executed on-chain (gas=...)  /  DEMO: OK
+export KATANA_RPC=... KATANA_SAFE_ADDRESS=0x...   # same names as the table above
+safe-propose dry-run --fn katana_caps --network katana
+safe-propose send    --fn katana_caps --network katana   # also needs PROPOSER_PRIVATE_KEY
 ```
 
-This is the local equivalent of `send` without the Tx Service: because you own the Safe,
-signatures are real (no impersonation) and the tx actually executes. The production
-`send` path instead *proposes* to the Tx Service for the real owners to sign.
+The CLI reads the environment only; it does not load `.env`. Use
+[`examples/.env.example`](examples/.env.example) as a checklist and never commit a
+filled copy.
 
-For the full operator flow (local sanity → `dry-run` → gated live `send`), see
-[`docs/RUNBOOK.md`](docs/RUNBOOK.md).
-
-## Secrets hygiene
-
-Production Safe addresses, RPC URLs, Telegram chat IDs, and API keys belong in the
-consuming repo's untracked `.env` / GitHub secrets — not in this engine. Use
-[`examples/.env.example`](examples/.env.example) as a template and export the needed
-values before running the CLI; the CLI does not load `.env` automatically. The template
-itself must stay empty of values. `Config` redacts private keys, gateway keys, scan tokens, and
-complete RPC and Tx Service URLs in `repr`. RPC/CLI error text replaces `http(s)`/`ws(s)`
-URLs before they are printed or posted as a PR comment, so a provider key in an endpoint
-is not echoed. Telegram errors strip the bot token before they are printed.
-
-If a credential is ever committed, revoke or rotate it even after removing it from Git:
-it stays in Git history.
-
-## GitHub Actions (redundant roboanimals path)
+## Running from a PR
 
 [`examples/.github/workflows/safe-propose.yml`](examples/.github/workflows/safe-propose.yml)
 is a drop-in workflow for a consuming repo that mirrors the roboanimals PR-comment UX:
@@ -221,9 +198,8 @@ Also runnable from the Actions tab (`workflow_dispatch`); that path does not nee
 requires write/maintain/admin on the repository), and commented PRs must use a
 branch in the same repository. Fork PRs are rejected because their code would
 otherwise run with RPC and proposer credentials. The workflow checks out the
-verified PR commit before running it. Secrets/vars it needs are listed at the top
-of the file. This is the independent, maintained second engine the project exists
-to provide — same trigger ergonomics, no EOL brownie, no untimed hangs.
+verified PR commit before running it. Setup and the secrets it needs are in
+[Integrating into a multisig repo](#integrating-into-a-multisig-repo).
 
 `send --close-pr` creates/applies the nonce label (e.g. `katana #20`, `eth #53`), then
 closes the PR after successful pre-flight and proposal. `--label-pr` only labels it.
@@ -274,6 +250,86 @@ Review the code, verify the output, and view queued tx on safe
   defaults to `GITHUB_ACTOR` in CI or your local `git config user.name` (override `--sender`).
 - In the workflow, pass `TELEGRAM_TOKEN` as a secret and `TELEGRAM_CHAT_ID` as a repo
   variable (already wired in the template).
+
+## Supported chains
+
+| `--network` | Aliases | Chain ID | Env prefix | Safe Tx Service | Gateway key |
+|---|---|---|---|---|---|
+| `ethereum` | `eth`, `mainnet` | 1 | `ETH` | Safe gateway (`eth`) | yes |
+| `base` | | 8453 | `BASE` | Safe gateway (`base`) | yes |
+| `arbitrum` | `arb` | 42161 | `ARB` | Safe gateway (`arb1`) | yes |
+| `optimism` | `op` | 10 | `OP` | Safe gateway (`oeth`) | yes |
+| `hyperevm` | `hyper`, `hyperliquid` | 999 | `HYPEREVM` | Safe gateway (`hyper`) | yes |
+| `katana` | | 747474 | `KATANA` | `safe-transaction-katana.safe.global` | no |
+| `rise` | | 4153 | `RISE` | `multisig-txs.risechain.com` | no |
+| `robinhood` | `robinhoodchain` | 4663 | `ROBINHOOD` | Safe gateway (`robinhood`) | yes |
+
+The Safe gateway is `https://api.safe.global/tx-service/<slug>/api`. Queue links go to
+`app.safe.global`, except RISE, which uses `multisig.risechain.com`.
+
+Per-chain environment, using the env prefix:
+
+- `<PREFIX>_RPC` — required. Must support forking (dry-run and `send` both simulate first).
+- `<PREFIX>_SAFE_ADDRESS` — the Safe on that chain; falls back to `ETH_SAFE_ADDRESS`.
+- `<PREFIX>_TX_SERVICE_URL` — optional Tx Service override. Keep the trailing `/api`.
+- `<PREFIX>_SAFE_QUEUE_URL` — optional Safe web app URL for the queue link.
+
+Every chain must also be declared in the consuming repo's `ape-config.yaml`
+(`ethereum:mainnet` is built into Ape and only needs its `node` URI).
+
+## Adding a chain
+
+### In a consuming repo only (no engine change)
+
+Any chain declared under `networks.custom` in `ape-config.yaml` works with
+`--network <ecosystem>`:
+
+1. Add the `custom`, `node`, and `foundry.fork` entries, as for the built-in chains in
+   [`examples/ape-config.yaml`](examples/ape-config.yaml). Name the network `mainnet` (the
+   engine connects to `<ecosystem>:mainnet`) and use a lowercase ecosystem name without
+   hyphens (e.g. `mychain`); its uppercase form is the env prefix (`MYCHAIN`).
+2. Set `MYCHAIN_RPC`, `MYCHAIN_SAFE_ADDRESS`, and `MYCHAIN_TX_SERVICE_URL` (the chain's
+   Safe Tx Service base URL ending in `/api`). The engine has no built-in Tx Service for
+   such a chain.
+3. In the workflow, add `MYCHAIN_SAFE_ADDRESS` to the job `env`, and `MYCHAIN_RPC` (plus
+   `MYCHAIN_TX_SERVICE_URL`) to the env of both the Dry-run and Send steps.
+
+The queue link uses the ecosystem name as the Safe chain prefix (`safe=mychain:0x…`). If
+Safe uses a different EIP-3770 prefix for the chain, add it to the engine instead.
+
+### Built into the engine (PR to this repo)
+
+1. `src/safe_propose/config.py` — add a `NetworkSpec` to `NETWORK_SPECS` (name, chain id,
+   env prefix, EIP-3770 prefix for the queue link, optional custom queue URL) and any
+   aliases to `NETWORK_ALIASES`.
+2. `src/safe_propose/txservice.py` — if Safe's gateway serves the chain, add its slug to
+   `GATEWAY_SLUGS` (it can differ from the EIP-3770 prefix, as for HyperEVM); otherwise
+   add the standalone service to `OVERRIDE_URLS` (base URL ending in `/api`).
+3. Examples — add the chain to `examples/ape-config.yaml`, `examples/.env.example`, and
+   the env blocks of `examples/.github/workflows/safe-propose.yml`.
+4. Tests — cover the new network in `tests/test_config.py` and `tests/test_txservice.py`.
+
+## Local demo (no Safe Tx Service)
+
+Prove the whole build→sign→land pipeline against a Safe, **locally**, with no external
+Safe Transaction Service: it forks the chain with anvil, deploys a throwaway **1-of-1
+Safe you own**, builds a tx through the engine, signs as the owner, and executes it
+on-chain — then reads the result back.
+
+```bash
+uv sync --extra dev            # eth-ape, ape-safe, ape-foundry (from uv.lock)
+# plus the anvil binary: https://book.getfoundry.sh/getting-started/installation
+export KATANA_RPC=...       # or KATANA_RPC_2 — a fork-capable Katana RPC
+make demo-local                 # python scripts/local_demo.py
+# → [4/5] executed on-chain (gas=...)  /  DEMO: OK
+```
+
+This is the local equivalent of `send` without the Tx Service: because you own the Safe,
+signatures are real (no impersonation) and the tx actually executes. The production
+`send` path instead *proposes* to the Tx Service for the real owners to sign.
+
+For the full operator flow (local sanity → `dry-run` → gated live `send`), see
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 ## License
 
