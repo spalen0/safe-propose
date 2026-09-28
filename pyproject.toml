@@ -19,6 +19,9 @@ dependencies = [
     "eth-ape>=0.8,<0.9",
     "ape-safe>=0.8,<0.9",
     "ape-etherscan>=0.8,<0.9",
+    # dry-run and send simulate on a foundry fork; the anvil binary is installed
+    # separately (foundryup / foundry-toolchain).
+    "ape-foundry>=0.8,<0.9",
     "click>=8.1",
     "requests>=2.31",
     "PyYAML>=6.0",
@@ -31,9 +34,6 @@ dev = [
     # >=0.16: the formatter checks Python code blocks in Markdown (docs/*.md),
     # so local ruff and CI agree on what "formatted" means.
     "ruff>=0.16",
-    # ape-foundry (anvil) is needed for the forked-chain `live` integration tests; the
-    # anvil binary itself must be installed separately (foundryup).
-    "ape-foundry>=0.8,<0.9",
 ]
 
 [project.scripts]
