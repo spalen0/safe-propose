@@ -32,7 +32,7 @@ _SECRET_ENV_NAMES = frozenset(
         "PROPOSER_PRIVATE_KEY",
         "APE_SAFE_GATEWAY_API_KEY",
         "TELEGRAM_TOKEN",
-        # Required by the consuming-repo workflow while this repository is private.
+        # Engine-install token that older consuming-repo workflows still set.
         "SAFE_PROPOSE_TOKEN",
     }
 )
