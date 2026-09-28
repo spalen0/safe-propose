@@ -53,6 +53,11 @@ simulate / diff / propose        GitHub secrets / env  # delegate key, RPCs, API
 
 ### 1. Add these files
 
+**New repo:** create it from
+[safe-propose-template](https://github.com/spalen0/safe-propose-template) (Use this
+template), which already contains these files and a `smoke_test` transaction, then continue
+with step 2. **Existing repo:** add them yourself:
+
 ```
 your-multisig-repo/
   scripts/safe_txs.py                   # @txn transaction definitions
