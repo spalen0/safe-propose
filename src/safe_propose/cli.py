@@ -213,24 +213,17 @@ def send(
         # queued. Failing calls are shown with the same friendly trace line as the dry-run.
         with runtime.connect(config, fork=True) as fork_safe:
             fork_ctx = runtime.make_ctx(config, const)
-            fork_batch = engine.build(fn, fork_ctx, fork_safe)
-            preflighted_calls = engine.decode_calls(fork_batch)
-            sims = engine.simulate_trace(fork_batch, fork_safe, require_ordered=True)
+            batch = engine.build(fn, fork_ctx, fork_safe)
+            sims = engine.simulate_trace(batch, fork_safe, require_ordered=True)
         failures = [c for c in sims if not c.success]
         if failures:
             detail = "\n  ".join(render.render_call_sim(c) for c in failures)
             _fail(f"pre-flight failed; not proposing:\n  {detail}")
 
         with runtime.connect(config, fork=False) as safe:
-            ctx = runtime.make_ctx(config, const)
-            batch = engine.build(fn, ctx, safe)  # rebuild on live for the proposed SafeTx
-            # The definition may read mutable chain state, which can change between the
-            # fork and live connections; never propose calls that were not pre-flighted.
-            if engine.decode_calls(batch) != preflighted_calls:
-                _fail(
-                    "live batch differs from the pre-flighted fork batch (on-chain state "
-                    "read by the definition changed); not proposing. Re-run send."
-                )
+            # Queue the pre-flighted calls. Do not rebuild the definition on the live
+            # node: a read such as convertToShares changes every block, so a second
+            # build would encode different calls from the ones just simulated.
 
             # --nonce overrides (to REPLACE a tx already queued at that nonce); otherwise
             # use the queue-aware "next" nonce from the Tx Service.
