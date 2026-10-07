@@ -60,11 +60,11 @@ with an explicit ABI, and trace decoding from cached ABIs, skip explorer fetchin
 ### `send`
 1–4 as above, then:
 5. Pre-flight on a **fork** exactly like `dry-run` (ordered batch state); **abort** if any
-   call fails — a failing tx is never queued. Only then connect to the **live** node and
-   rebuild the batch there; a live `eth_call` cannot carry state between calls, and
-   nothing is ever sent on the live node. If the live rebuild encodes different calls
-   than the pre-flighted fork batch (the definition read chain state that moved), `send`
-   aborts rather than propose calls that were never simulated.
+   call fails — a failing tx is never queued. The queued calls are that pre-flighted
+   batch. The definition is not rebuilt on the live node, because a read such as
+   `convertToShares` changes every block and a second build would no longer be the
+   batch that was simulated. The live connection is only for the queue nonce and the
+   proposal. Nothing is sent on the live node before the Safe service accepts it.
 6. Resolve the **queue-aware** nonce from the Tx Service (`runtime.proposal_nonce`,
    fails closed if the service is unreachable) and build the SafeTx; print the same
    wallet-verifiable EIP-712 message and payload and prompt (unless `--yes`).

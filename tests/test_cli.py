@@ -611,14 +611,14 @@ def test_send_preflights_on_fork_and_proposes_on_live(monkeypatch, fixtures_dir)
         ("simulate", "batch@fork-safe", "fork-safe", {"require_ordered": True}),
         ("disconnect", True),
         ("connect", False),
-        ("build_safe_tx", "batch@live-safe", "live-safe"),
+        ("build_safe_tx", "batch@fork-safe", "live-safe"),
         ("propose", "live-safe"),
         ("disconnect", False),
     ]
 
 
-def test_send_refuses_when_live_batch_differs_from_preflight(monkeypatch, fixtures_dir):
-    """A definition reading mutable state can encode different calls on live than on fork."""
+def test_send_queues_the_preflighted_batch(monkeypatch, fixtures_dir):
+    """A moving chain read is taken from the fork build, which is the simulated batch."""
     monkeypatch.setenv("KATANA_SAFE_ADDRESS", SAFE)
     monkeypatch.setenv("KATANA_RPC", "x")
     monkeypatch.delenv("APE_SAFE_GATEWAY_API_KEY", raising=False)
@@ -627,17 +627,46 @@ def test_send_refuses_when_live_batch_differs_from_preflight(monkeypatch, fixtur
     def fake_connect(config, *, fork, net_name="mainnet"):
         yield "fork-safe" if fork else "live-safe"
 
+    built = []
+
     def build(fn, ctx, safe):
-        amount = b"\x01" if safe == "fork-safe" else b"\x02"  # state moved between connects
+        built.append(safe)
+        amount = b"\x01" if safe == "fork-safe" else b"\x02"
         return SimpleNamespace(calls=[{"target": "0xToken", "value": 0, "callData": amount}])
 
     monkeypatch.setattr("safe_propose.runtime.connect", fake_connect)
     monkeypatch.setattr("safe_propose.runtime.make_ctx", lambda config, const=None: object())
     monkeypatch.setattr("safe_propose.engine.build", build)
     monkeypatch.setattr("safe_propose.engine.simulate_trace", lambda batch, safe, **k: ())
+    seen = {}
+
+    def build_safe_tx(batch, safe, nonce=None):
+        seen.update(batch=batch, safe=safe)
+        return object(), "0xhash", nonce
+
+    monkeypatch.setattr("safe_propose.runtime.proposal_nonce", lambda safe, endpoint: 7)
+    monkeypatch.setattr("safe_propose.engine.build_safe_tx", build_safe_tx)
+    monkeypatch.setattr(
+        "safe_propose.engine.safe_tx_fields",
+        lambda safe_tx: {
+            "to": "0x96",
+            "value": 0,
+            "data": "0x",
+            "operation": 1,
+            "safeTxGas": 0,
+            "baseGas": 0,
+            "gasPrice": 0,
+            "gasToken": "0x0",
+            "refundReceiver": "0x0",
+            "nonce": 7,
+        },
+    )
     proposed = []
-    monkeypatch.setattr("safe_propose.runtime.proposal_nonce", lambda *a: proposed.append(a))
-    monkeypatch.setattr("safe_propose.runtime.propose", lambda *a, **k: proposed.append(a))
+    monkeypatch.setattr("safe_propose.runtime.load_proposer", lambda config: object())
+    monkeypatch.setattr(
+        "safe_propose.runtime.propose",
+        lambda *a, **k: proposed.append("proposed"),
+    )
 
     res = CliRunner().invoke(
         main,
@@ -652,9 +681,11 @@ def test_send_refuses_when_live_batch_differs_from_preflight(monkeypatch, fixtur
             str(fixtures_dir / "sample_txs.py"),
         ],
     )
-    assert res.exit_code != 0
-    assert "live batch differs from the pre-flighted fork batch" in res.output
-    assert proposed == []
+    assert res.exit_code == 0, res.output
+    assert built == ["fork-safe"]
+    assert seen["safe"] == "live-safe"
+    assert seen["batch"].calls[0]["callData"] == b"\x01"
+    assert proposed == ["proposed"]
 
 
 def test_dry_run_nonce_override(monkeypatch, fixtures_dir):
