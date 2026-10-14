@@ -33,14 +33,19 @@ and run from a PR branch.
    `--network katana`); inject the Safe ABI (explorer-less chains).
 3. `git diff <base>...HEAD` over the consuming repo → render the code diff in the terminal only.
 4. Load `scripts/safe_txs.py` (or `--txs-file`), look up `--fn`, run it against a fresh
-   `batch` (`batch.add`). `engine.build` streams redacted Python stdout live in both
+   `batch` (`batch.add`). `engine.build` streams redacted Python text stdout live in both
    `dry-run` and `send`, flushing completed lines and explicit flushes immediately.
    Dry-run also keeps the first 16,000 characters in `SimulationResult.stdout`, with a
    truncation notice if needed. Capture covers only definition execution; stderr,
-   subprocess/native FD writes, hashing, and simulation messages stay in the process log.
-   Partial lines are flushed on every exit, including Ctrl-C and `sys.exit`, with a terminal
-   newline so subsequent CLI diagnostics stay greppable. Already-streamed output remains
-   visible if a fatal error or process termination prevents the report.
+   hashing, and simulation messages stay in the process log. `sys.stdout.buffer` writes,
+   `click.echo(bytes)`, and subprocess/native FD writes bypass both capture and redaction.
+   Partial lines are flushed when Python unwinds the context, including Ctrl-C and
+   `sys.exit`, with a terminal newline so subsequent CLI diagnostics stay greppable.
+   Abrupt termination by SIGTERM/SIGKILL does not unwind the context: only completed or
+   explicitly flushed text has reached the log; unflushed partial lines can be lost.
+   `flush=True` makes partial progress visible immediately. Redaction is applied per emitted piece, so a
+   secret split across explicit flushes can leak into the live log. The renderer redacts
+   the joined captured text again before printing/posting the report.
 5. Build the EIP-712 SafeTx (`safe.safe_tx_def`, on-chain nonce) and **pre-flight** each
    inner call **in batch order** via `eth_call` + `estimate_gas` from the Safe
    (`engine.simulate_trace`), applying each passing call to the fork before checking the
@@ -53,6 +58,8 @@ and run from a PR branch.
    **Transaction output** text block, with the existing secret/URL redaction and a fence
    that preserves embedded Markdown. This section also appears on failed pre-flights
    and when execution is skipped.
+   The terminal therefore contains both the live definition output and its report copy;
+   the PR comment contains only the report copy.
 7. If `--post-comment`: post the rendered block without the code diff via
    `gh pr comment --body-file -`, passing the body through stdin.
    Decoded arguments use indented JSON with full addresses/hex bytes; raw calldata is

@@ -106,7 +106,7 @@ class SimulationResult:
 def build(fn: Any, ctx: Any, safe: Any, *, stdout: StringIO | None = None) -> Any:
     """Create a fresh ape-safe batch and run the tx definition against it.
 
-    Definition stdout is redacted and streamed live, with an optional bounded report copy.
+    Definition text stdout is redacted and streamed live, with an optional bounded report copy.
 
     Args:
         fn: Transaction definition to execute.

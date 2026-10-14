@@ -38,6 +38,6 @@ Wire the full validate path and render stable output.
       captures, and retained diagnostics/stdout restoration after fatal definition, hashing,
       or simulation errors.
 - [x] **Stdout review follow-up:** stream redacted output live in both commands, retain
-      progress across interruption/termination, separate CLI errors from partial lines,
+      already-streamed progress across interruption/termination, separate errors from partial lines,
       bound report capture, and omit whitespace-only sections. `tests/test_output.py`
       covers streaming, truncation, interruptions, and a stalled child killed with SIGTERM.

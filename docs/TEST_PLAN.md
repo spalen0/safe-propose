@@ -29,7 +29,7 @@ Run on every PR. Mock all HTTP/RPC.
   from hashing/simulation are not captured as transaction output. Fatal definition,
   hashing, or simulation errors retain the captured diagnostics with redaction.
   Completed lines are streamed before the definition returns; Ctrl-C, `sys.exit`, and
-  SIGTERM retain previously printed progress. Both commands redact definition stdout;
+  SIGTERM retain already-streamed progress. Both commands redact definition text stdout;
   CLI RPC overrides are exported into the redaction environment before definitions run.
   Report capture is bounded with a truncation notice while the live log stays complete.
   PR comments use stdin, enforce a conservative character budget, and handle subprocess

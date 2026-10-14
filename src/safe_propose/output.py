@@ -1,4 +1,9 @@
-"""Stream redacted Python stdout live and retain a bounded copy for reports."""
+"""Stream redacted Python text stdout live and retain a bounded copy for reports.
+
+Binary stream and native FD writes bypass this wrapper. Live redaction applies to each
+emitted piece; secrets split across explicit flushes need the renderer's joined-text pass.
+Abrupt process termination can lose unflushed partial lines.
+"""
 
 from __future__ import annotations
 
@@ -57,7 +62,7 @@ class _TransactionStdout:
         self._stream.flush()
 
     def finish(self) -> None:
-        """Flush on every exit and separate subsequent CLI output onto a new line."""
+        """Flush when the context unwinds and separate subsequent CLI output onto a new line."""
         self.flush()
         if self._line_open:
             self._stream.write("\n")
@@ -72,7 +77,8 @@ def capture_stdout(*, buffer: StringIO | None = None) -> Generator[None, None, N
 
     Args:
         buffer: Destination for redacted text, limited to CAPTURE_LIMIT characters
-            plus a truncation notice. Native writes to FD 1 are not captured.
+            plus a truncation notice. Binary stream and native FD writes bypass
+            capture and redaction.
 
     Yields:
         Control while Python stdout writes are redirected; stderr stays unchanged.
