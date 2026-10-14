@@ -55,7 +55,7 @@ and run from a PR branch.
    SafeTx preview with `safe_tx_hash`. The preview retains its nonce, but there is no
    proposal nonce/queue footer because nothing is queued.
    Nonblank captured stdout appears directly after the pre-flight status in a
-   **Transaction output** text block, with the existing secret/URL redaction and a fence
+   **Simulation Prints** text block, with the existing secret/URL redaction and a fence
    that preserves embedded Markdown. This section also appears on failed pre-flights
    and when execution is skipped.
    The terminal therefore contains both the live definition output and its report copy;

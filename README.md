@@ -28,7 +28,7 @@ safe-propose send    --fn <name> --network <net>                    # sign with 
   posting the block to the PR via `gh`, without the code diff. Decoded arguments are
   formatted as JSON with full addresses and hex bytes; raw calldata stays copyable in
   collapsed sections. A failed pre-flight exits nonzero after printing/posting the report.
-  Output printed by the `@txn` function appears in a **Transaction output** section
+  Output printed by the `@txn` function appears in a **Simulation Prints** section
   directly after the pre-flight status in both the terminal report and PR comment,
   including failed pre-flights and `--no-execute`. Python text stdout is streamed live with
   secret/URL redaction in both `dry-run` and `send`; completed lines and explicit flushes

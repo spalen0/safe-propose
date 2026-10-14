@@ -177,7 +177,7 @@ def render_block(result: SimulationResult, *, diff: str | None = None) -> str:
         longest_run = max((len(run) for run in re.findall(r"`+", output)), default=0)
         fence = "`" * max(3, longest_run + 1)
         ending = "" if output.endswith("\n") else "\n"
-        lines += ["### Transaction output", "", f"{fence}text\n{output}{ending}{fence}", ""]
+        lines += ["### Simulation Prints", "", f"{fence}text\n{output}{ending}{fence}", ""]
 
     if diff is not None:
         body = diff.rstrip() or "(no diff vs base)"

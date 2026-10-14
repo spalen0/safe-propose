@@ -222,12 +222,12 @@ def test_dry_run_captures_prints_in_terminal_and_comment(monkeypatch, tmp_path, 
     assert res.exit_code == int(outcome == "failed"), res.output
     assert len(posted) == 1
     for text in (res.output, posted[0]):
-        assert "### Transaction output\n\n```text\nFirst cap: 6000000\n  Second cap: 0\n```" in text
+        assert "### Simulation Prints\n\n```text\nFirst cap: 6000000\n  Second cap: 0\n```" in text
         assert "safe_tx_hash: 0xabc123" in text
     assert res.output.count("First cap: 6000000") == 2  # live log and report
     assert posted[0].count("First cap: 6000000") == 1
     status = "FAILED ❌" if outcome == "failed" else "ok ✅"
-    assert f"pre-flight (per-call): {status}\n\n### Transaction output" in posted[0]
+    assert f"pre-flight (per-call): {status}\n\n### Simulation Prints" in posted[0]
     assert "+private diff text" in res.output
     assert "+private diff text" not in posted[0]
 

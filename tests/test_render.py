@@ -239,7 +239,7 @@ def test_gas_estimation_diagnostic_is_visible():
 
 @pytest.mark.parametrize("stdout", ["", "\n", " \t\n"])
 def test_render_omits_empty_transaction_output(stdout):
-    assert "### Transaction output" not in render_block(replace(_result(), stdout=stdout))
+    assert "### Simulation Prints" not in render_block(replace(_result(), stdout=stdout))
 
 
 @pytest.mark.parametrize("success", [True, False])
@@ -248,14 +248,14 @@ def test_render_includes_transaction_stdout(success, diff):
     output = "First cap: 6000000\n\n  Second cap: 0\n"
     result = replace(_result(), stdout=output, success=success)
     block = render_block(result, diff=diff)
-    assert f"### Transaction output\n\n```text\n{output}```" in block
-    assert block.index("### Transaction output") < block.index("### Simulated batch")
+    assert f"### Simulation Prints\n\n```text\n{output}```" in block
+    assert block.index("### Simulation Prints") < block.index("### Simulated batch")
 
 
 def test_render_transaction_output_preserves_embedded_markdown():
     output = "# heading\n```\n</details>\n````text\n@someone"
     block = render_block(replace(_result(), stdout=output))
-    assert f"### Transaction output\n\n`````text\n{output}\n`````" in block
+    assert f"### Simulation Prints\n\n`````text\n{output}\n`````" in block
 
 
 def test_render_transaction_output_redacts_configured_secrets(monkeypatch):
