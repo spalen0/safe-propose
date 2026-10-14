@@ -6,6 +6,8 @@ import json
 import re
 from dataclasses import replace
 
+import pytest
+
 from safe_propose.config import DEFAULT_SAFE_QUEUE_URL, format_queue_url
 from safe_propose.engine import CallSim, DecodedCall, SimulationResult
 from safe_propose.render import render_block, render_trace
@@ -233,3 +235,33 @@ def test_gas_estimation_diagnostic_is_visible():
     assert "ok   gas≈?   eth_estimateGas failed: timeout" in render_trace(
         replace(r, call_sims=(call,))
     )
+
+
+@pytest.mark.parametrize("stdout", ["", "\n", " \t\n"])
+def test_render_omits_empty_transaction_output(stdout):
+    assert "### Transaction output" not in render_block(replace(_result(), stdout=stdout))
+
+
+@pytest.mark.parametrize("success", [True, False])
+@pytest.mark.parametrize("diff", [None, "+changed"])
+def test_render_includes_transaction_stdout(success, diff):
+    output = "First cap: 6000000\n\n  Second cap: 0\n"
+    result = replace(_result(), stdout=output, success=success)
+    block = render_block(result, diff=diff)
+    assert f"### Transaction output\n\n```text\n{output}```" in block
+    assert block.index("### Transaction output") < block.index("### Simulated batch")
+
+
+def test_render_transaction_output_preserves_embedded_markdown():
+    output = "# heading\n```\n</details>\n````text\n@someone"
+    block = render_block(replace(_result(), stdout=output))
+    assert f"### Transaction output\n\n`````text\n{output}\n`````" in block
+
+
+def test_render_transaction_output_redacts_configured_secrets(monkeypatch):
+    monkeypatch.setenv("PROPOSER_PRIVATE_KEY", "private-key-value")
+    output = "RPC: https://user:pass@rpc.example/key\nkey: private-key-value\n"
+    block = render_block(replace(_result(), stdout=output))
+    assert "RPC: ***url***\nkey: ***\n" in block
+    assert "private-key-value" not in block
+    assert "rpc.example" not in block

@@ -33,7 +33,19 @@ and run from a PR branch.
    `--network katana`); inject the Safe ABI (explorer-less chains).
 3. `git diff <base>...HEAD` over the consuming repo → render the code diff in the terminal only.
 4. Load `scripts/safe_txs.py` (or `--txs-file`), look up `--fn`, run it against a fresh
-   `batch` (`batch.add`).
+   `batch` (`batch.add`). `engine.build` streams redacted Python text stdout live in both
+   `dry-run` and `send`, flushing completed lines and explicit flushes immediately.
+   Dry-run also keeps the first 16,000 characters in `SimulationResult.stdout`, with a
+   truncation notice if needed. Capture covers only definition execution; stderr,
+   hashing, and simulation messages stay in the process log. `sys.stdout.buffer` writes,
+   `click.echo(bytes)`, and subprocess/native FD writes bypass both capture and redaction.
+   Partial lines are flushed when Python unwinds the context, including Ctrl-C and
+   `sys.exit`, with a terminal newline so subsequent CLI diagnostics stay greppable.
+   Abrupt termination by SIGTERM/SIGKILL does not unwind the context: only completed or
+   explicitly flushed text has reached the log; unflushed partial lines can be lost.
+   `flush=True` makes partial progress visible immediately. Redaction is applied per emitted piece, so a
+   secret split across explicit flushes can leak into the live log. The renderer redacts
+   the joined captured text again before printing/posting the report.
 5. Build the EIP-712 SafeTx (`safe.safe_tx_def`, on-chain nonce) and **pre-flight** each
    inner call **in batch order** via `eth_call` + `estimate_gas` from the Safe
    (`engine.simulate_trace`), applying each passing call to the fork before checking the
@@ -42,9 +54,18 @@ and run from a PR branch.
 6. Render decoded calls, per-call calldata, the per-call trace, and the full EIP-712
    SafeTx preview with `safe_tx_hash`. The preview retains its nonce, but there is no
    proposal nonce/queue footer because nothing is queued.
-7. If `--post-comment`: post the rendered block without the code diff via `gh pr comment`.
+   Nonblank captured stdout appears directly after the pre-flight status in a
+   **Transaction output** text block, with the existing secret/URL redaction and a fence
+   that preserves embedded Markdown. This section also appears on failed pre-flights
+   and when execution is skipped.
+   The terminal therefore contains both the live definition output and its report copy;
+   the PR comment contains only the report copy.
+7. If `--post-comment`: post the rendered block without the code diff via
+   `gh pr comment --body-file -`, passing the body through stdin.
    Decoded arguments use indented JSON with full addresses/hex bytes; raw calldata is
    preserved in copyable code blocks inside collapsed sections.
+   Reports over the 65,536-character comment budget fail softly with a pointer to the
+   full terminal report, preserving transaction calldata rather than truncating it.
 8. Exit nonzero if any call failed, after printing/posting the report.
 
 Per-call checks explicitly use `gasPrice=0`: the Safe is the inner-call sender, while the

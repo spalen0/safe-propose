@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, field
+from io import StringIO
 from typing import Any
 
 from safe_propose.config import redact_error_text
+from safe_propose.output import capture_stdout
 
 
 def _to_hex(value: Any) -> str:
@@ -98,15 +100,26 @@ class SimulationResult:
     tx_fields: dict[str, Any] = field(default_factory=dict)
     traces: tuple[str, ...] = field(default_factory=tuple)
     success: bool = True
+    stdout: str = ""  # output printed while running the transaction definition
 
 
-def build(fn: Any, ctx: Any, safe: Any) -> Any:
+def build(fn: Any, ctx: Any, safe: Any, *, stdout: StringIO | None = None) -> Any:
     """Create a fresh ape-safe batch and run the tx definition against it.
 
-    ``safe`` is a connected ape-safe ``SafeAccount``. Returns the populated ``MultiSend``.
+    Definition text stdout is redacted and streamed live, with an optional bounded report copy.
+
+    Args:
+        fn: Transaction definition to execute.
+        ctx: Context passed to the definition.
+        safe: Connected ape-safe SafeAccount providing the batch.
+        stdout: Optional buffer receiving the bounded, redacted definition output.
+
+    Returns:
+        The populated ape-safe MultiSend batch.
     """
     batch = safe.create_batch()
-    fn(batch, ctx)
+    with capture_stdout(buffer=stdout):
+        fn(batch, ctx)
     return batch
 
 
@@ -315,7 +328,7 @@ def simulate_trace(
                 "value": value,
                 "gasPrice": 0,
             }
-            outcome = _simulate_call(w3.eth, tx)
+            outcome: dict[str, Any] = _simulate_call(w3.eth, tx)
             if sequential is not None and outcome.get("success", True):
                 apply_error = _apply_call(w3, sequential[1], tx)
                 if apply_error:
@@ -485,9 +498,10 @@ def simulate(
     ``eth_call`` + ``estimate_gas`` each inner call from the Safe, capturing
     ``Contract.method(args) → ok/revert, gas≈N`` — no signatures, no impersonated
     ``execTransaction``, and no Tx Service call. ``success``/``traces`` are derived
-    from the trace.
+    from the trace. Stdout from the definition is captured in ``stdout`` for the report.
     """
-    batch = build(fn, ctx, safe)
+    stdout = StringIO()
+    batch = build(fn, ctx, safe, stdout=stdout)
     safe_tx, safe_tx_hash, nonce = build_safe_tx(batch, safe, nonce=nonce)
 
     success = True
@@ -515,4 +529,5 @@ def simulate(
         tx_fields=safe_tx_fields(safe_tx),
         traces=traces,
         success=success,
+        stdout=stdout.getvalue(),
     )

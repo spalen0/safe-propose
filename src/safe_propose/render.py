@@ -11,6 +11,7 @@ calldata — so signers can verify byte-for-byte before approving.
 from __future__ import annotations
 
 import json
+import re
 
 from safe_propose.config import redact_error_text
 from safe_propose.engine import CallSim, SimulationResult
@@ -159,7 +160,7 @@ def render_tx_to_sign(result: SimulationResult) -> str:
 
 
 def render_block(result: SimulationResult, *, diff: str | None = None) -> str:
-    """Render the dry-run block: optional code diff, calls, typed-data preview, and hash.
+    """Render the dry-run block with definition output, calls, typed-data preview, and hash.
 
     No proposal footer is shown because nothing is queued. Failed reports omit the
     typed-data preview.
@@ -170,6 +171,13 @@ def render_block(result: SimulationResult, *, diff: str | None = None) -> str:
         f"pre-flight (per-call): {'ok ✅' if result.success else 'FAILED ❌'}",
         "",
     ]
+
+    if result.stdout.strip():
+        output = redact_error_text(result.stdout)
+        longest_run = max((len(run) for run in re.findall(r"`+", output)), default=0)
+        fence = "`" * max(3, longest_run + 1)
+        ending = "" if output.endswith("\n") else "\n"
+        lines += ["### Transaction output", "", f"{fence}text\n{output}{ending}{fence}", ""]
 
     if diff is not None:
         body = diff.rstrip() or "(no diff vs base)"

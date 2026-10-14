@@ -146,6 +146,132 @@ def test_dry_run_post_comment(monkeypatch, fixtures_dir):
     assert "+private diff text" not in calls["body"]
 
 
+@pytest.mark.parametrize("outcome", ["ok", "failed", "no-execute"])
+def test_dry_run_captures_prints_in_terminal_and_comment(monkeypatch, tmp_path, outcome):
+    monkeypatch.setenv("KATANA_SAFE_ADDRESS", SAFE)
+    monkeypatch.setenv("KATANA_RPC", "x")
+    txs_file = tmp_path / "safe_txs.py"
+    txs_file.write_text(
+        "from safe_propose import txn\n"
+        "@txn\n"
+        "def printed(batch, ctx):\n"
+        "    print('First cap: 6000000')\n"
+        "    print('  Second cap: 0', end='')\n"
+    )
+    safe = SimpleNamespace(create_batch=lambda: SimpleNamespace(calls=[]))
+
+    @contextlib.contextmanager
+    def connect(config, *, fork):
+        yield safe
+
+    monkeypatch.setattr("safe_propose.runtime.connect", connect)
+    monkeypatch.setattr("safe_propose.runtime.safe_onchain_nonce", lambda safe: 7)
+    monkeypatch.setattr("safe_propose.gitutil.code_diff", lambda base: "+private diff text")
+    monkeypatch.setattr(
+        "safe_propose.engine.build_safe_tx",
+        lambda batch, safe, nonce: (
+            SimpleNamespace(
+                to="0xMULTISEND",
+                value=0,
+                data=b"",
+                operation=1,
+                safeTxGas=0,
+                baseGas=0,
+                gasPrice=0,
+                gasToken="0xZERO",
+                refundReceiver="0xZERO",
+                nonce=nonce,
+            ),
+            "0xabc123",
+            nonce,
+        ),
+    )
+    monkeypatch.setattr(
+        "safe_propose.engine.simulate_trace",
+        lambda batch, safe, **kwargs: (
+            CallSim(
+                index=1,
+                target="0xVault",
+                contract_name="Vault",
+                method="submitCap",
+                args=(),
+                success=outcome != "failed",
+                revert_reason="invalid cap" if outcome == "failed" else "",
+            ),
+        ),
+    )
+    posted = []
+    monkeypatch.setattr(
+        "safe_propose.gitutil.post_comment", lambda body: (posted.append(body) or True, "posted")
+    )
+    args = [
+        "dry-run",
+        "--fn",
+        "printed",
+        "--network",
+        "katana",
+        "--post-comment",
+        "--txs-file",
+        str(txs_file),
+        "--constants-file",
+        str(tmp_path / "missing.py"),
+    ]
+    if outcome == "no-execute":
+        args.append("--no-execute")
+    res = CliRunner().invoke(main, args)
+    assert res.exit_code == int(outcome == "failed"), res.output
+    assert len(posted) == 1
+    for text in (res.output, posted[0]):
+        assert "### Transaction output\n\n```text\nFirst cap: 6000000\n  Second cap: 0\n```" in text
+        assert "safe_tx_hash: 0xabc123" in text
+    assert res.output.count("First cap: 6000000") == 2  # live log and report
+    assert posted[0].count("First cap: 6000000") == 1
+    status = "FAILED ❌" if outcome == "failed" else "ok ✅"
+    assert f"pre-flight (per-call): {status}\n\n### Transaction output" in posted[0]
+    assert "+private diff text" in res.output
+    assert "+private diff text" not in posted[0]
+
+
+@pytest.mark.parametrize("command", ["dry-run", "send"])
+def test_definition_error_keeps_redacted_prints_on_separate_line(monkeypatch, tmp_path, command):
+    monkeypatch.setenv("KATANA_SAFE_ADDRESS", SAFE)
+    monkeypatch.setenv("KATANA_RPC", SECRET_RPC)
+    monkeypatch.delenv("APE_SAFE_GATEWAY_API_KEY", raising=False)
+    monkeypatch.delenv("KATANA_TX_SERVICE_URL", raising=False)
+    txs_file = tmp_path / "safe_txs.py"
+    txs_file.write_text(
+        "from safe_propose import txn\n"
+        "@txn\n"
+        "def printed(batch, ctx):\n"
+        "    print('host=rpchostkey.rpc.example, path=/v2/supersecretkey', end='')\n"
+        "    raise ValueError('invalid cap')\n"
+    )
+    safe = SimpleNamespace(create_batch=lambda: SimpleNamespace(calls=[]))
+    monkeypatch.setattr(
+        "safe_propose.runtime.connect", lambda *args, **kwargs: contextlib.nullcontext(safe)
+    )
+    monkeypatch.setattr("safe_propose.runtime.safe_onchain_nonce", lambda safe: 7)
+    monkeypatch.setattr("safe_propose.gitutil.code_diff", lambda base: "")
+    res = CliRunner().invoke(
+        main,
+        [
+            command,
+            "--fn",
+            "printed",
+            "--network",
+            "katana",
+            "--txs-file",
+            str(txs_file),
+            "--constants-file",
+            str(tmp_path / "missing.py"),
+        ],
+    )
+    assert res.exit_code == 1
+    assert f"host=***, path=/v2/***\nerror: {command} failed: invalid cap\n" in res.output
+    assert "rpchostkey" not in res.output
+    assert "supersecretkey" not in res.output
+
+
 @pytest.mark.parametrize("post_comment", [False, True])
 def test_dry_run_exits_nonzero_after_rendering_failure(monkeypatch, fixtures_dir, post_comment):
     monkeypatch.setenv("KATANA_SAFE_ADDRESS", SAFE)

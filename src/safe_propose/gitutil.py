@@ -13,21 +13,28 @@ import subprocess
 
 DEFAULT_TIMEOUT = 15
 PR_ENV = "SAFE_PROPOSE_PR"
+COMMENT_LIMIT = 65_536
 
 
-def _run(args: list[str], *, timeout: int = DEFAULT_TIMEOUT) -> tuple[int, str, str]:
+def _run(
+    args: list[str], *, timeout: int = DEFAULT_TIMEOUT, input_text: str | None = None
+) -> tuple[int, str, str]:
     """Run a command with a timeout; return (returncode, stdout, stderr).
 
-    Returns ``(127, "", msg)`` if the binary is missing and ``(124, "", msg)`` on timeout
+    Returns ``(127, "", msg)`` if the command cannot start and ``(124, "", msg)`` on timeout
     — never raises for the common failure modes.
     """
     if shutil.which(args[0]) is None:
         return 127, "", f"{args[0]} not found on PATH"
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            args, input=input_text, capture_output=True, text=True, timeout=timeout
+        )
         return proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired:
         return 124, "", f"{args[0]} timed out after {timeout}s"
+    except OSError as exc:
+        return 127, "", f"could not run {args[0]}: {exc}"
 
 
 def detect_base(explicit: str | None = None) -> str:
@@ -86,10 +93,17 @@ def post_comment(body: str, *, pr: str | None = None) -> tuple[bool, str]:
     Returns ``(posted, message)``. Never raises: if ``gh`` is missing/unauthenticated or
     no PR is found, returns ``(False, <reason>)`` so the caller can warn and continue.
     """
+    if len(body) > COMMENT_LIMIT:
+        return (
+            False,
+            "report exceeds the 65,536-character comment budget; see full report in terminal",
+        )
     target = pr or detect_pr()
     if target is None:
         return False, "no PR found for the current branch (or gh unavailable)"
-    code, _, err = _run(["gh", "pr", "comment", target, "--body", body], timeout=30)
+    code, _, err = _run(
+        ["gh", "pr", "comment", target, "--body-file", "-"], timeout=30, input_text=body
+    )
     if code == 0:
         return True, f"posted comment to PR #{target}"
     return False, f"gh pr comment failed: {err.strip() or f'exit {code}'}"
