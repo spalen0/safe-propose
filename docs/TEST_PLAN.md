@@ -22,6 +22,12 @@ Run on every PR. Mock all HTTP/RPC.
 - **Render** (Task 07): given a structured simulation result, output contains the diff,
   decoded calls and `safe_tx_hash` in a **stable, greppable** format, without a proposal footer
   (snapshot test). PR-comment body renders from the same structure.
+  Printed transaction output appears directly after the pre-flight status in the terminal
+  and PR comment, including failed pre-flights and `--no-execute`. Empty output is omitted;
+  multiline text, whitespace, and embedded Markdown are preserved, secrets/URLs are
+  redacted, and stdout is restored even when a definition raises. Stderr and messages
+  from hashing/simulation are not captured as transaction output. Fatal definition,
+  hashing, or simulation errors retain the captured diagnostics with redaction.
 - **Timeout guard (repo-wide):** a test/lint check that asserts no `requests.*` /
   HTTP/RPC call is made without a timeout (grep-based or a fixture that patches
   `requests` to fail if `timeout` is None).

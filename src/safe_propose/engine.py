@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, field
+from io import StringIO
 from typing import Any
 
 from safe_propose.config import redact_error_text
@@ -98,6 +99,7 @@ class SimulationResult:
     tx_fields: dict[str, Any] = field(default_factory=dict)
     traces: tuple[str, ...] = field(default_factory=tuple)
     success: bool = True
+    stdout: str = ""  # output printed while running the transaction definition
 
 
 def build(fn: Any, ctx: Any, safe: Any) -> Any:
@@ -315,7 +317,7 @@ def simulate_trace(
                 "value": value,
                 "gasPrice": 0,
             }
-            outcome = _simulate_call(w3.eth, tx)
+            outcome: dict[str, Any] = _simulate_call(w3.eth, tx)
             if sequential is not None and outcome.get("success", True):
                 apply_error = _apply_call(w3, sequential[1], tx)
                 if apply_error:
@@ -485,34 +487,42 @@ def simulate(
     ``eth_call`` + ``estimate_gas`` each inner call from the Safe, capturing
     ``Contract.method(args) → ok/revert, gas≈N`` — no signatures, no impersonated
     ``execTransaction``, and no Tx Service call. ``success``/``traces`` are derived
-    from the trace.
+    from the trace. Stdout from the definition is captured in ``stdout`` for the report.
     """
-    batch = build(fn, ctx, safe)
-    safe_tx, safe_tx_hash, nonce = build_safe_tx(batch, safe, nonce=nonce)
+    stdout = StringIO()
+    try:
+        with contextlib.redirect_stdout(stdout):
+            batch = build(fn, ctx, safe)
+        safe_tx, safe_tx_hash, nonce = build_safe_tx(batch, safe, nonce=nonce)
 
-    success = True
-    traces: tuple[str, ...] = ()
-    call_sims: tuple[CallSim, ...] = ()
-    if execute:
-        call_sims = simulate_trace(batch, safe, require_ordered=True)
-        success = all(c.success for c in call_sims)
-        traces = tuple(
-            f"call failed: {c.target}: {c.error or c.revert_reason}"
-            for c in call_sims
-            if not c.success
+        success = True
+        traces: tuple[str, ...] = ()
+        call_sims: tuple[CallSim, ...] = ()
+        if execute:
+            call_sims = simulate_trace(batch, safe, require_ordered=True)
+            success = all(c.success for c in call_sims)
+            traces = tuple(
+                f"call failed: {c.target}: {c.error or c.revert_reason}"
+                for c in call_sims
+                if not c.success
+            )
+
+        return SimulationResult(
+            fn_name=getattr(fn, "__name__", str(fn)),
+            network=network,
+            chain_id=ctx.chain_id,
+            safe_address=ctx.safe_address,
+            safe_shortname=safe_shortname,
+            nonce=nonce,
+            safe_tx_hash=safe_tx_hash,
+            decoded_calls=decode_calls(batch),
+            call_sims=call_sims,
+            tx_fields=safe_tx_fields(safe_tx),
+            traces=traces,
+            success=success,
+            stdout=stdout.getvalue(),
         )
-
-    return SimulationResult(
-        fn_name=getattr(fn, "__name__", str(fn)),
-        network=network,
-        chain_id=ctx.chain_id,
-        safe_address=ctx.safe_address,
-        safe_shortname=safe_shortname,
-        nonce=nonce,
-        safe_tx_hash=safe_tx_hash,
-        decoded_calls=decode_calls(batch),
-        call_sims=call_sims,
-        tx_fields=safe_tx_fields(safe_tx),
-        traces=traces,
-        success=success,
-    )
+    except Exception:
+        # A fatal build/RPC error leaves no report; retain the definition's diagnostics.
+        print(redact_error_text(stdout.getvalue()), end="")
+        raise

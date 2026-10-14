@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 from eth_abi import encode
 from web3.exceptions import ContractLogicError, Web3RPCError
 
-from safe_propose.engine import _revert_reason, simulate_trace
+from safe_propose.engine import _revert_reason, simulate, simulate_trace
 
 
 class _Exc(Exception):
@@ -355,3 +358,87 @@ def test_revert_reason_redacts_before_truncating(monkeypatch):
     reason = _revert_reason(_Exc(msg))
     assert "supersecretkeypath" not in reason
     assert len(reason) <= 160
+
+
+@pytest.mark.parametrize("outcome", ["ok", "failed", "no-execute", "silent"])
+def test_simulate_captures_definition_stdout(monkeypatch, capsys, outcome):
+    batch = _credit_spend_batch()
+    if outcome == "failed":
+        batch.calls.reverse()
+    safe = _dev_safe(_ApplyingEth(), _DevProvider())
+    safe.create_batch = lambda: batch
+    ctx = SimpleNamespace(chain_id=1, safe_address="0xSAFE")
+
+    def definition(batch, ctx):
+        if outcome != "silent":
+            print("Preparing caps…", "6000000", sep="\n")
+            print("  final amount", end="")
+        print("definition warning", file=sys.stderr)
+
+    def build_tx(batch, safe, *, nonce):
+        print("hash diagnostics")
+        return (
+            SimpleNamespace(
+                to="0xMULTISEND",
+                value=0,
+                data=b"",
+                operation=1,
+                safeTxGas=0,
+                baseGas=0,
+                gasPrice=0,
+                gasToken="0xZERO",
+                refundReceiver="0xZERO",
+                nonce=nonce,
+            ),
+            "0xabc123",
+            nonce,
+        )
+
+    monkeypatch.setattr("safe_propose.engine.build_safe_tx", build_tx)
+    for _ in range(2):
+        result = simulate(
+            definition,
+            ctx,
+            safe,
+            network="example",
+            safe_shortname="example",
+            execute=outcome != "no-execute",
+            nonce=7,
+        )
+        expected = "" if outcome == "silent" else "Preparing caps…\n6000000\n  final amount"
+        assert result.stdout == expected
+        assert result.success is (outcome != "failed")
+        assert result.safe_tx_hash == "0xabc123"
+        assert result.nonce == 7
+        captured = capsys.readouterr()
+        assert captured.out == "hash diagnostics\n"
+        assert captured.err == "definition warning\n"
+        # The fake RPC does not implement rollback; reset it between independent runs.
+        safe.provider.web3.eth.credited = False
+
+
+@pytest.mark.parametrize("stage", ["definition", "hash", "simulation"])
+def test_simulate_retains_stdout_when_run_raises(monkeypatch, capsys, stage):
+    safe = SimpleNamespace(create_batch=lambda: object())
+    stream = sys.stdout
+
+    def definition(batch, ctx):
+        print("before exception")
+        print("RPC: https://rpc.example/key")
+        if stage == "definition":
+            raise ValueError("invalid cap")
+
+    def fail(*args, **kwargs):
+        raise ValueError("invalid cap")
+
+    if stage == "hash":
+        monkeypatch.setattr("safe_propose.engine.build_safe_tx", fail)
+    elif stage == "simulation":
+        monkeypatch.setattr("safe_propose.engine.build_safe_tx", lambda *a, **k: (None, "0xabc", 7))
+        monkeypatch.setattr("safe_propose.engine.simulate_trace", fail)
+
+    with pytest.raises(ValueError, match="invalid cap"):
+        simulate(definition, object(), safe, network="example", safe_shortname="example")
+    assert sys.stdout is stream
+    print("after exception")
+    assert capsys.readouterr().out == "before exception\nRPC: ***url***\nafter exception\n"

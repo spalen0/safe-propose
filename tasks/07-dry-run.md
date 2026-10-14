@@ -30,3 +30,10 @@ Wire the full validate path and render stable output.
       wallet shows when signing), plus each inner call's calldata. Dry-run data is a
       preview; the send output uses the proposal nonce. Empty-signature execution
       templates are omitted. (`render.render_signable`, `engine.safe_tx_fields`.)
+- [x] **Transaction stdout (issue #6):** capture printed output during the dry-run build
+      and include it directly after the pre-flight status in the terminal report and PR
+      comment. Preserve formatting, redact secrets/URLs, and omit the section when empty.
+      `tests/test_engine.py`, `tests/test_render.py`, and `tests/test_cli.py` cover successful
+      and failed pre-flights, `--no-execute`, Markdown fences, stderr separation, repeated
+      captures, and retained diagnostics/stdout restoration after fatal definition, hashing,
+      or simulation errors.
