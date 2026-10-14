@@ -2,12 +2,40 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
 from types import SimpleNamespace
 
 import pytest
 
 from safe_propose import runtime
+from safe_propose.config import redact_error_text, resolve_config
 from safe_propose.txservice import TxServiceEndpoint
+
+
+@pytest.mark.parametrize("fork", [True, False])
+def test_connect_exports_cli_rpc_for_split_error_redaction(monkeypatch, fork):
+    uri = "https://keyhost.rpc.example/v2/secretkeyvalue"
+    config = resolve_config(
+        "katana",
+        cli={"rpc_uri": uri},
+        env={"KATANA_SAFE_ADDRESS": "0xSAFE", "KATANA_RPC": "https://old.example"},
+        ape_config_path=None,
+    )
+    monkeypatch.setenv("KATANA_RPC", "https://old.example")
+    safe = object()
+    monkeypatch.setattr(runtime, "ensure_safe_registered", lambda config: "safe")
+    monkeypatch.setattr(runtime, "network_choice", lambda config, **kwargs: "network")
+    monkeypatch.setattr(runtime, "inject_safe_abi", lambda safe: None)
+    monkeypatch.setattr(
+        "ape.networks.parse_network_choice", lambda choice: contextlib.nullcontext()
+    )
+    monkeypatch.setattr("ape.accounts.load", lambda alias: safe)
+    with runtime.connect(config, fork=fork) as connected:
+        assert connected is safe
+        assert os.environ["KATANA_RPC"] == uri
+        error = "HTTPSConnectionPool(host='keyhost.rpc.example'), url: /v2/secretkeyvalue"
+        assert redact_error_text(error) == "HTTPSConnectionPool(host='***'), url: /v2/***"
 
 
 @pytest.mark.parametrize("nonce", [0, 20])

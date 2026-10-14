@@ -237,8 +237,9 @@ def test_gas_estimation_diagnostic_is_visible():
     )
 
 
-def test_render_omits_empty_transaction_output():
-    assert "### Transaction output" not in render_block(_result())
+@pytest.mark.parametrize("stdout", ["", "\n", " \t\n"])
+def test_render_omits_empty_transaction_output(stdout):
+    assert "### Transaction output" not in render_block(replace(_result(), stdout=stdout))
 
 
 @pytest.mark.parametrize("success", [True, False])

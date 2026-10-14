@@ -14,9 +14,13 @@ Mirror the roboanimals bot by posting the dry-run block to the PR.
 4. Reuse the exact rendered body from Task 07 (`render.py`) for the comment.
 
 ## Acceptance criteria
-- [x] With a PR present, a comment is posted containing the diff + hash + link.
-      `gitutil.post_comment` posts the **exact** rendered block via `gh pr comment`;
+- [x] With a PR present, a comment is posted containing the report and hash, excluding
+      the terminal's code diff. `gitutil.post_comment` posts the rendered block via stdin
+      using `gh pr comment --body-file -`;
       `tests/test_cli.py::test_dry_run_post_comment` asserts the same body is reused.
 - [x] Without `gh`/PR, the command still succeeds locally and warns clearly.
       `gitutil` fails soft (missing/timed-out binary, no PR) → `(False, reason)`; the CLI
       prints the warning to stderr and dry-run still exits 0.
+- [x] Oversized reports and subprocess OS errors fail softly. Captured transaction
+      output is bounded; full signed calldata is retained in the terminal report.
+      `tests/test_gitutil.py` covers stdin transport, the character budget, and OS errors.

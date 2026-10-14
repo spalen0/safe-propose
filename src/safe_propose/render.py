@@ -172,7 +172,7 @@ def render_block(result: SimulationResult, *, diff: str | None = None) -> str:
         "",
     ]
 
-    if result.stdout:
+    if result.stdout.strip():
         output = redact_error_text(result.stdout)
         longest_run = max((len(run) for run in re.findall(r"`+", output)), default=0)
         fence = "`" * max(3, longest_run + 1)

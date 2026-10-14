@@ -411,7 +411,8 @@ def test_simulate_captures_definition_stdout(monkeypatch, capsys, outcome):
         assert result.safe_tx_hash == "0xabc123"
         assert result.nonce == 7
         captured = capsys.readouterr()
-        assert captured.out == "hash diagnostics\n"
+        live = expected + "\n" if expected else ""
+        assert captured.out == live + "hash diagnostics\n"
         assert captured.err == "definition warning\n"
         # The fake RPC does not implement rollback; reset it between independent runs.
         safe.provider.web3.eth.credited = False
@@ -442,3 +443,16 @@ def test_simulate_retains_stdout_when_run_raises(monkeypatch, capsys, stage):
     assert sys.stdout is stream
     print("after exception")
     assert capsys.readouterr().out == "before exception\nRPC: ***url***\nafter exception\n"
+
+
+def test_build_redacts_live_definition_output_without_simulation(monkeypatch, capsys):
+    from safe_propose.engine import build
+
+    monkeypatch.setenv("KATANA_RPC", "https://keyhost.rpc.example/v2/secretkeyvalue")
+    safe = SimpleNamespace(create_batch=lambda: object())
+
+    def definition(batch, ctx):
+        print("host=keyhost.rpc.example, path=/v2/secretkeyvalue", end="")
+
+    build(definition, object(), safe)
+    assert capsys.readouterr().out == "host=***, path=/v2/***\n"

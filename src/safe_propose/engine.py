@@ -26,6 +26,7 @@ from io import StringIO
 from typing import Any
 
 from safe_propose.config import redact_error_text
+from safe_propose.output import capture_stdout
 
 
 def _to_hex(value: Any) -> str:
@@ -102,13 +103,23 @@ class SimulationResult:
     stdout: str = ""  # output printed while running the transaction definition
 
 
-def build(fn: Any, ctx: Any, safe: Any) -> Any:
+def build(fn: Any, ctx: Any, safe: Any, *, stdout: StringIO | None = None) -> Any:
     """Create a fresh ape-safe batch and run the tx definition against it.
 
-    ``safe`` is a connected ape-safe ``SafeAccount``. Returns the populated ``MultiSend``.
+    Definition stdout is redacted and streamed live, with an optional bounded report copy.
+
+    Args:
+        fn: Transaction definition to execute.
+        ctx: Context passed to the definition.
+        safe: Connected ape-safe SafeAccount providing the batch.
+        stdout: Optional buffer receiving the bounded, redacted definition output.
+
+    Returns:
+        The populated ape-safe MultiSend batch.
     """
     batch = safe.create_batch()
-    fn(batch, ctx)
+    with capture_stdout(buffer=stdout):
+        fn(batch, ctx)
     return batch
 
 
@@ -490,39 +501,33 @@ def simulate(
     from the trace. Stdout from the definition is captured in ``stdout`` for the report.
     """
     stdout = StringIO()
-    try:
-        with contextlib.redirect_stdout(stdout):
-            batch = build(fn, ctx, safe)
-        safe_tx, safe_tx_hash, nonce = build_safe_tx(batch, safe, nonce=nonce)
+    batch = build(fn, ctx, safe, stdout=stdout)
+    safe_tx, safe_tx_hash, nonce = build_safe_tx(batch, safe, nonce=nonce)
 
-        success = True
-        traces: tuple[str, ...] = ()
-        call_sims: tuple[CallSim, ...] = ()
-        if execute:
-            call_sims = simulate_trace(batch, safe, require_ordered=True)
-            success = all(c.success for c in call_sims)
-            traces = tuple(
-                f"call failed: {c.target}: {c.error or c.revert_reason}"
-                for c in call_sims
-                if not c.success
-            )
-
-        return SimulationResult(
-            fn_name=getattr(fn, "__name__", str(fn)),
-            network=network,
-            chain_id=ctx.chain_id,
-            safe_address=ctx.safe_address,
-            safe_shortname=safe_shortname,
-            nonce=nonce,
-            safe_tx_hash=safe_tx_hash,
-            decoded_calls=decode_calls(batch),
-            call_sims=call_sims,
-            tx_fields=safe_tx_fields(safe_tx),
-            traces=traces,
-            success=success,
-            stdout=stdout.getvalue(),
+    success = True
+    traces: tuple[str, ...] = ()
+    call_sims: tuple[CallSim, ...] = ()
+    if execute:
+        call_sims = simulate_trace(batch, safe, require_ordered=True)
+        success = all(c.success for c in call_sims)
+        traces = tuple(
+            f"call failed: {c.target}: {c.error or c.revert_reason}"
+            for c in call_sims
+            if not c.success
         )
-    except Exception:
-        # A fatal build/RPC error leaves no report; retain the definition's diagnostics.
-        print(redact_error_text(stdout.getvalue()), end="")
-        raise
+
+    return SimulationResult(
+        fn_name=getattr(fn, "__name__", str(fn)),
+        network=network,
+        chain_id=ctx.chain_id,
+        safe_address=ctx.safe_address,
+        safe_shortname=safe_shortname,
+        nonce=nonce,
+        safe_tx_hash=safe_tx_hash,
+        decoded_calls=decode_calls(batch),
+        call_sims=call_sims,
+        tx_fields=safe_tx_fields(safe_tx),
+        traces=traces,
+        success=success,
+        stdout=stdout.getvalue(),
+    )

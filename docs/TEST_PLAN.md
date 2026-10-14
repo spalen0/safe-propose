@@ -23,11 +23,17 @@ Run on every PR. Mock all HTTP/RPC.
   decoded calls and `safe_tx_hash` in a **stable, greppable** format, without a proposal footer
   (snapshot test). PR-comment body renders from the same structure.
   Printed transaction output appears directly after the pre-flight status in the terminal
-  and PR comment, including failed pre-flights and `--no-execute`. Empty output is omitted;
+  and PR comment, including failed pre-flights and `--no-execute`. Blank output is omitted;
   multiline text, whitespace, and embedded Markdown are preserved, secrets/URLs are
   redacted, and stdout is restored even when a definition raises. Stderr and messages
   from hashing/simulation are not captured as transaction output. Fatal definition,
   hashing, or simulation errors retain the captured diagnostics with redaction.
+  Completed lines are streamed before the definition returns; Ctrl-C, `sys.exit`, and
+  SIGTERM retain previously printed progress. Both commands redact definition stdout;
+  CLI RPC overrides are exported into the redaction environment before definitions run.
+  Report capture is bounded with a truncation notice while the live log stays complete.
+  PR comments use stdin, enforce a conservative character budget, and handle subprocess
+  OS errors without crashing the dry-run.
 - **Timeout guard (repo-wide):** a test/lint check that asserts no `requests.*` /
   HTTP/RPC call is made without a timeout (grep-based or a fixture that patches
   `requests` to fail if `timeout` is None).

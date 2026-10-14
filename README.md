@@ -30,8 +30,14 @@ safe-propose send    --fn <name> --network <net>                    # sign with 
   collapsed sections. A failed pre-flight exits nonzero after printing/posting the report.
   Output printed by the `@txn` function appears in a **Transaction output** section
   directly after the pre-flight status in both the terminal report and PR comment,
-  including failed pre-flights and `--no-execute`. Captured output uses the same secret
-  and URL redaction as RPC diagnostics.
+  including failed pre-flights and `--no-execute`. Python stdout is streamed live with
+  secret/URL redaction in both `dry-run` and `send`; completed lines and explicit flushes
+  are visible immediately. The report keeps the first 16,000 characters with a truncation
+  notice for longer output; the full redacted output stays in the process log.
+  Whitespace-only output is omitted from the report. Subprocess/native FD writes stay in
+  the process log and are outside the Python stdout capture.
+  Comments are posted through stdin. Reports over the 65,536-character comment budget
+  produce a warning directing the operator to the full terminal report.
   Simulation uses zero gas price because the Safe is the inner-call sender; native-value
   transfers still require its real balance. RPC errors and contract reverts are reported
   separately, and a failed gas estimate is shown as an advisory diagnostic.
