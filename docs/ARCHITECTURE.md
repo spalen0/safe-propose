@@ -33,7 +33,11 @@ and run from a PR branch.
    `--network katana`); inject the Safe ABI (explorer-less chains).
 3. `git diff <base>...HEAD` over the consuming repo → render the code diff in the terminal only.
 4. Load `scripts/safe_txs.py` (or `--txs-file`), look up `--fn`, run it against a fresh
-   `batch` (`batch.add`). `engine.build` streams redacted Python text stdout live in both
+   `batch` (`batch.add`). On the fork each `batch.add` is also applied from the
+   impersonated Safe before it returns, so later view calls in the definition see the
+   calls already queued; the fork is restored before step 5 (see "Build-time batch
+   state" below). This also happens with `--no-execute`, which only skips step 5.
+   `engine.build` streams redacted Python text stdout live in both
    `dry-run` and `send`, flushing completed lines and explicit flushes immediately.
    Dry-run also keeps the first 16,000 characters in `SimulationResult.stdout`, with a
    truncation notice if needed. Capture covers only definition execution; stderr,
@@ -71,7 +75,9 @@ and run from a PR branch.
 Per-call checks explicitly use `gasPrice=0`: the Safe is the inner-call sender, while the
 executor pays transaction gas. Zero-value calls also get a temporary `state_override` /
 `*_setBalance` on the Safe so Anvil/OP-stack gas accounting cannot false-fail a 0-ETH
-Safe; native-value transfers still use the real balance. Contract reverts and RPC/transport
+Safe; the `*_setBalance` top-up is put back to the Safe's real native balance right after
+each apply, so later native-balance reads and native transfers never see the fake gas
+funds. Native-value transfers always use the real balance. Contract reverts and RPC/transport
 errors both fail the pre-flight and are rendered separately. RPC and CLI error text
 replaces `http(s)`/`ws(s)` URLs before printing or posting, so a key in an endpoint is
 not echoed into the terminal or a PR comment. Gas estimation remains advisory after a
@@ -135,6 +141,13 @@ def katana_caps(batch, ctx):
 ```
 
 - `batch` — an `ape-safe` batch; `batch.add(contract.method, *args)` queues a call.
+  On a fork (`dry-run`, and `send`'s pre-flight) the queued call is also applied to the
+  fork before `add` returns, so a later read such as `token.balanceOf(safe)` or
+  `vault.convertToShares(x)` sees every call queued before it. `add` returns the batch, so
+  chained `batch.add(a).add(b)` applies both. `batch.add_from_receipt(receipt)` only
+  queues: that receipt's transaction already ran. A call that reverts during the build
+  stays queued without changing state (a notice goes to stderr) and the pre-flight
+  reports it; any other build-time failure aborts the build.
 - `ctx` — an engine-provided context object:
   - `ctx.contract(address, abi=None)` → an Ape `Contract` (ABI via ape-etherscan or
     a local interface dir). It is Ape's own `ContractInstance`, so it converts to an
@@ -175,13 +188,32 @@ Decisions for implementers (record the chosen answer here when made):
   `add_from_receipt` (simulate-then-record) is reserved for cases where a call's
   arguments are only known *after* executing a prior call; it is not the default.
   Consequence: `safe_tx_hash` is a pure function of (calls, nonce).
+- **Build-time batch state — DECIDED (issue #8).** Reads inside a definition must see the
+  calls already queued (e.g. split the balance left after a claim and a budget transfer,
+  not the starting balance). On a fork `engine.build` takes an `evm_snapshot`,
+  impersonates the Safe, and hands the definition a thin wrapper (`_StatefulBatch`) around
+  the ape-safe batch. Its `add` calls the real `add`, then applies `calls[-1]` with the same
+  zero-fee apply as the pre-flight, so every `add` form (including pre-encoded calldata) is
+  applied without re-encoding. When the definition returns **or raises**, the snapshot is
+  restored and verified, so the pre-flight replays the same calls from the original state
+  (leaving them applied would make them double-spend). `build` returns the real batch, and
+  `batch.add` still only stores calldata, so the hash is unchanged as a function of
+  (calls, nonce). Failures: an `eth_call` contract revert is a *confirmed* revert, which is
+  skipped with a stderr notice and left for the pre-flight to report. Any other result
+  (RPC error, receipt timeout, non-1 status after a passing `eth_call`) is *unknown* and
+  aborts the build, because later amounts would be chosen on unknown state. Nodes without
+  snapshot/impersonation run the definition on the plain batch; the CLI still fails closed
+  at the pre-flight. Each apply mines a block, so time-dependent reads drift by a few
+  blocks.
 - **Simulation scope — DECIDED (issue #24).** The pre-send / dry-run check
   (`engine.simulate_trace`) is an **ordered batch-state pre-flight from the Safe**, matching
   how the MultiSend executes: on a fork it takes an `evm_snapshot`, impersonates the Safe,
   checks each call (`eth_call` + `estimate_gas`) and then *applies* it (zero base fee) so
   later calls see earlier state changes — e.g. a vault `withdraw` into the Safe followed by
   `transfer`s of the withdrawn tokens. Failed calls are not applied; the snapshot is
-  reverted when the trace ends. Both `dry-run` and `send` run it on a fork and **fail
+  reverted when the trace ends. Fork cleanup is verified: if `evm_revert` errors or
+  returns `false`, or stopping impersonation fails, the command aborts instead of
+  continuing on a fork that still holds applied calls. Both `dry-run` and `send` run it on a fork and **fail
   closed** (`require_ordered=True`) if the fork lacks `evm_snapshot`/impersonation; only
   direct library callers can fall back to independent checks against the same pre-state. Remaining gap: calls run with the Safe as `msg.sender`, not inside a
   delegatecall `execTransaction`, so Safe guards/modules are not exercised. The

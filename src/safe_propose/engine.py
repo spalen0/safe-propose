@@ -21,6 +21,7 @@ ape-safe API used here (verified against ape-safe 0.8.23, Task 02a/04 spike):
 from __future__ import annotations
 
 import contextlib
+import sys
 from dataclasses import dataclass, field
 from io import StringIO
 from typing import Any
@@ -108,6 +109,15 @@ def build(fn: Any, ctx: Any, safe: Any, *, stdout: StringIO | None = None) -> An
 
     Definition text stdout is redacted and streamed live, with an optional bounded report copy.
 
+    **Build-time batch state on forks:** on a dev node (snapshot + impersonation, see
+    :func:`simulate_trace`) the definition receives a :class:`_StatefulBatch`. Each
+    ``batch.add`` is applied from the impersonated Safe before it returns, so a later view
+    call (``balanceOf``, ``convertToShares``) sees the calls already queued. The snapshot
+    is restored (and verified) when the definition returns or raises, so the pre-flight
+    replays the same calls from the original state. ``batch.add`` still only stores
+    calldata: the Safe hash stays a function of (calls, nonce). Nodes without those RPCs
+    run the definition against the plain batch, as before.
+
     Args:
         fn: Transaction definition to execute.
         ctx: Context passed to the definition.
@@ -115,12 +125,95 @@ def build(fn: Any, ctx: Any, safe: Any, *, stdout: StringIO | None = None) -> An
         stdout: Optional buffer receiving the bounded, redacted definition output.
 
     Returns:
-        The populated ape-safe MultiSend batch.
+        The populated ape-safe MultiSend batch (never the wrapper).
+
+    Raises:
+        RuntimeError: A queued call's build-time apply had an unknown result, or the fork
+            could not be restored afterwards.
     """
     batch = safe.create_batch()
-    with capture_stdout(buffer=stdout):
-        fn(batch, ctx)
+    w3 = _web3_of(safe)
+    sequential = _begin_sequential(w3, safe.address) if w3 is not None else None
+    handle = batch
+    if sequential is not None:
+        handle = _StatefulBatch(batch, w3, safe.address, sequential[1])
+    try:
+        with capture_stdout(buffer=stdout):
+            fn(handle, ctx)
+    finally:
+        if sequential is not None:
+            _end_sequential(w3, safe.address, *sequential)
     return batch
+
+
+def _web3_of(safe: Any) -> Any:
+    """The connected web3 behind ``safe``, or None for a test double without a provider."""
+    return getattr(getattr(safe, "provider", None), "web3", None)
+
+
+class _StatefulBatch:
+    """The batch a definition sees on a fork: each ``add`` is also applied to the fork.
+
+    ``add`` delegates to ape-safe's ``MultiSend.add`` and then applies the call it appended
+    (``calls[-1]``), so every ``add`` form — including pre-encoded calldata such as
+    ``batch.add(vault.submit, encoded)`` — is applied without re-encoding. ``add`` and
+    ``add_from_receipt`` return the wrapper (ape-safe returns ``self``) so chained adds are
+    applied too. ``add_from_receipt`` only appends: that receipt's transaction already ran
+    on the fork. Everything else delegates to the real batch.
+    """
+
+    def __init__(self, batch: Any, w3: Any, safe_address: str, prefix: str) -> None:
+        self._batch = batch
+        self._w3 = w3
+        self._safe_address = safe_address
+        self._prefix = prefix
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._batch, name)
+
+    def add(self, *args: Any, **kwargs: Any) -> _StatefulBatch:
+        """Queue a call (ape-safe ``MultiSend.add``) and apply it to the fork."""
+        before = len(self._batch.calls)
+        self._batch.add(*args, **kwargs)
+        if len(self._batch.calls) > before:
+            self._apply(len(self._batch.calls), self._batch.calls[-1])
+        return self
+
+    def add_from_receipt(self, receipt: Any) -> _StatefulBatch:
+        """Queue an already-executed call without applying it again."""
+        self._batch.add_from_receipt(receipt)
+        return self
+
+    def _apply(self, index: int, call: dict[str, Any]) -> None:
+        """Apply one queued call; skip a confirmed revert, abort on an unknown result."""
+        target = str(call.get("target", ""))
+        tx = {
+            "from": self._safe_address,
+            "to": target,
+            "data": bytes(call.get("callData", b"") or b""),
+            "value": int(call.get("value", 0) or 0),
+            "gasPrice": 0,
+        }
+        outcome = _check_call(self._w3.eth, tx)
+        if outcome.get("error"):
+            raise RuntimeError(
+                f"build-time check of call #{index} ({target}) failed; "
+                f"later reads would use unknown state: {outcome['error']}"
+            )
+        if not outcome["success"]:
+            print(
+                f"safe-propose: call #{index} ({target}) reverts on the fork "
+                f"({outcome['revert_reason']}); it stays queued, but later reads in the "
+                "definition do not include it. The pre-flight reports it.",
+                file=sys.stderr,
+            )
+            return
+        apply_error = _apply_call(self._w3, self._prefix, tx)
+        if apply_error:
+            raise RuntimeError(
+                f"build-time apply of call #{index} ({target}) has an unknown result; "
+                f"later reads would use unknown state: {apply_error}"
+            )
 
 
 def decode_calls(batch: Any) -> tuple[DecodedCall, ...]:
@@ -273,7 +366,8 @@ def simulate_trace(
     ``withdraw`` can fund a later ``transfer``. On a dev node (Anvil/Hardhat fork, detected
     via ``evm_snapshot`` + ``*_impersonateAccount``) each call that passes is *applied* — sent
     from the impersonated Safe at zero base fee — before the next call is checked, and the
-    snapshot is reverted when the trace finishes. Failed calls are not applied, and a call
+    snapshot is reverted when the trace finishes; a failed or ``false`` revert raises
+    instead of leaving applied calls on the fork. Failed calls are not applied, and a call
     whose apply fails is reported as failed. Nodes without those RPCs (a live node) fall back
     to checking each call independently against the same pre-state, which can both
     false-reject and miss failures in dependent batches. ``require_ordered=True`` raises
@@ -384,28 +478,61 @@ def _apply_call(w3: Any, prefix: str, tx: dict[str, Any]) -> str:
 
     The next block's base fee is zeroed so the (possibly ETH-less) Safe pays no L2 gas.
     OP-stack forks (Katana) can still charge operator/L1 fees, so ``value == 0`` calls
-    also get a temporary ``*_setBalance`` on the impersonated Safe. Native transfers
-    still use the real balance. The sequential snapshot restores both afterwards.
+    also get a temporary ``*_setBalance`` on the impersonated Safe. That top-up is put back
+    to the Safe's real native balance right after the apply (pass or fail), so a later
+    native-balance read or native transfer never sees the fake gas funds. Native transfers
+    use the real balance throughout.
+
+    Raises:
+        RuntimeError: The real native balance could not be restored; fork state is unknown.
     """
+    sender = tx.get("from")
+    real_balance: int | None = None
     try:
-        if int(tx.get("value") or 0) == 0 and tx.get("from"):
-            _rpc(w3, f"{prefix}_setBalance", [tx["from"], _SIM_GAS_BALANCE_OVERRIDE])
+        if int(tx.get("value") or 0) == 0 and sender:
+            real_balance = int(w3.eth.get_balance(sender))
+            _rpc(w3, f"{prefix}_setBalance", [sender, _SIM_GAS_BALANCE_OVERRIDE])
         _rpc(w3, f"{prefix}_setNextBlockBaseFeePerGas", ["0x0"])
         tx_hash = w3.eth.send_transaction(tx)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=_APPLY_TIMEOUT)
     except Exception as exc:
-        return f"apply failed: {redact_error_text(str(exc))}"
-    if int(receipt["status"]) != 1:
-        return "apply failed: transaction reverted when applied to the fork"
-    return ""
+        error = f"apply failed: {redact_error_text(str(exc))}"
+    else:
+        error = ""
+        if int(receipt["status"]) != 1:
+            error = "apply failed: transaction reverted when applied to the fork"
+    finally:
+        if real_balance is not None:
+            try:
+                _rpc(w3, f"{prefix}_setBalance", [sender, hex(real_balance)])
+            except Exception as exc:
+                raise RuntimeError(
+                    "could not restore the Safe's native balance after a fork apply: "
+                    f"{redact_error_text(str(exc))}"
+                ) from None
+    return error
 
 
 def _end_sequential(w3: Any, safe_address: str, snapshot: Any, prefix: str) -> None:
-    """Stop impersonating and restore the pre-trace fork state (best effort)."""
-    with contextlib.suppress(Exception):
+    """Stop impersonating and restore the pre-trace fork state; raise if either fails.
+
+    Both steps are always attempted. A failed or ``false`` ``evm_revert`` leaves applied
+    calls on the fork (a later pre-flight would double-apply them), so it is fatal.
+    """
+    problems: list[str] = []
+    try:
         _rpc(w3, f"{prefix}_stopImpersonatingAccount", [safe_address])
-    with contextlib.suppress(Exception):
-        _rpc(w3, "evm_revert", [snapshot])
+    except Exception as exc:
+        problems.append(f"stop impersonating failed: {redact_error_text(str(exc))}")
+    try:
+        restored = _rpc(w3, "evm_revert", [snapshot])
+    except Exception as exc:
+        problems.append(f"evm_revert failed: {redact_error_text(str(exc))}")
+    else:
+        if restored is not True:
+            problems.append(f"evm_revert returned {restored!r}")
+    if problems:
+        raise RuntimeError("fork cleanup failed; aborting: " + "; ".join(problems))
 
 
 # Seconds to wait for an applied call's receipt on the (auto-mining) fork.
@@ -426,8 +553,8 @@ def _gas_balance_override(tx: dict[str, Any]) -> dict[str, Any] | None:
     return {sender: {"balance": _SIM_GAS_BALANCE_OVERRIDE}}
 
 
-def _simulate_call(eth: Any, tx: dict[str, Any]) -> dict[str, Any]:
-    """Check execution, then collect an advisory gas estimate without changing state."""
+def _check_call(eth: Any, tx: dict[str, Any]) -> dict[str, Any]:
+    """``eth_call`` only: success, a contract ``revert_reason``, or an RPC ``error``."""
     from web3.exceptions import ContractLogicError
 
     overrides = _gas_balance_override(tx)
@@ -438,6 +565,15 @@ def _simulate_call(eth: Any, tx: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "revert_reason": _revert_reason(exc)}
     except Exception as exc:
         return {"success": False, "error": f"eth_call failed: {redact_error_text(str(exc))}"}
+    return {"success": True}
+
+
+def _simulate_call(eth: Any, tx: dict[str, Any]) -> dict[str, Any]:
+    """Check execution, then collect an advisory gas estimate without changing state."""
+    checked = _check_call(eth, tx)
+    if not checked["success"]:
+        return checked
+    overrides = _gas_balance_override(tx)
     try:
         if overrides is None:
             return {"gas": int(eth.estimate_gas(tx))}

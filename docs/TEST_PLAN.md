@@ -34,6 +34,19 @@ Run on every PR. Mock all HTTP/RPC.
   Report capture is bounded with a truncation notice while the live log stays complete.
   PR comments use stdin, enforce a conservative character budget, and handle subprocess
   OS errors without crashing the dry-run.
+- **Build-time batch state** (issue #8): with a mocked RPC, `engine.build` applies each
+  `batch.add` before it returns, returns the wrapper on chained adds, does not re-apply
+  `add_from_receipt`, restores once on return or raise, falls back to the plain batch
+  without dev RPCs, skips a confirmed revert with a notice, and aborts on an unknown
+  result. Fork cleanup raises on a failed/`false` `evm_revert` or a failed
+  stop-impersonating call; a failed native-balance restore raises.
+- **Local Anvil** (`tests/test_simulation_anvil.py`, needs the `anvil` binary, no fork or
+  RPC): the ordered pre-flight, plus build-time batch state against a real token
+  (`tests/fixtures/contracts/BatchToken.sol`): the claim/budget/split example reads 40
+  and queues 20 and the pre-flight starts from 100; chaining, pre-encoded calldata,
+  `add_from_receipt`, restore on raise, confirmed revert, receipt-timeout abort,
+  `false` `evm_revert`, and native balance after a zero-value apply (in both `build` and
+  `simulate_trace`).
 - **Timeout guard (repo-wide):** a test/lint check that asserts no `requests.*` /
   HTTP/RPC call is made without a timeout (grep-based or a fixture that patches
   `requests` to fail if `timeout` is None).
