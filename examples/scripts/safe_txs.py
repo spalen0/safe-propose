@@ -50,3 +50,15 @@ def katana_caps(batch, ctx):
 #   vault = ctx.contract(MORPHO_V2_VAULT)
 #   selector = vault.setReceiveSharesGate.selector  # HexBytes("0x2cb19f98")
 #   batch.add(vault.submit, vault.abdicate.encode_input(selector))
+
+
+# Reads see the calls already queued. On the fork each `batch.add` is applied before it
+# returns, so a balance read after a claim and a transfer returns what will actually be
+# left at that point in the MultiSend. Shown rather than registered (placeholder
+# addresses):
+#
+#   token = ctx.contract(TOKEN)
+#   batch.add(ctx.contract(ESCROW).claim)
+#   batch.add(token.transfer, TEAM, BUDGET)
+#   remaining = token.balanceOf(ctx.safe_address)  # after the claim and the budget
+#   batch.add(token.transfer, RECIPIENT, remaining // 2)

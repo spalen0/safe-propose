@@ -28,6 +28,11 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Set up Foundry
+        # Provides the anvil binary for tests/test_simulation_anvil.py (local Anvil, no
+        # fork or RPC); without it those tests skip.
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09  # v1
+
       - name: Install
         # From the committed uv.lock, so CI runs the exact versions local dev does
         # (also applies the [tool.uv] exclude-newer supply-chain gate).

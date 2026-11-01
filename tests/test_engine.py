@@ -110,6 +110,9 @@ class _ApplyingEth(_Eth):
             raise ContractLogicError("execution reverted", data="0xdeadbeef00000000")
         return b""
 
+    def get_balance(self, address):
+        return 7
+
     def send_transaction(self, tx):
         self.sent.append(tx)
         self.credited = self.credited or tx["to"] == "0xCredit"
@@ -139,7 +142,9 @@ def test_simulate_trace_applies_calls_in_order_on_dev_node():
     assert all(tx["from"] == "0xSAFE" and tx["gasPrice"] == 0 for tx in eth.sent)
     methods = [m for m, _ in provider.requests]
     assert methods[:2] == ["evm_snapshot", "anvil_impersonateAccount"]
-    assert methods.count("anvil_setBalance") == 2
+    # Each zero-value apply tops up gas funds, then restores the real balance (7 wei).
+    balances = [p for m, p in provider.requests if m == "anvil_setBalance"]
+    assert balances == [["0xSAFE", hex(10**18)], ["0xSAFE", "0x7"]] * 2
     assert methods.count("anvil_setNextBlockBaseFeePerGas") == 2
     assert provider.requests[-1] == ("evm_revert", ["0x1"])  # fork restored at the end
 
@@ -456,3 +461,164 @@ def test_build_redacts_live_definition_output_without_simulation(monkeypatch, ca
 
     build(definition, object(), safe)
     assert capsys.readouterr().out == "host=***, path=/v2/***\n"
+
+
+# --- build-time batch state (issue #8), mocked RPC ---------------------------------------
+
+
+class _MultiSend:
+    """ape-safe ``MultiSend`` stand-in: ``add`` appends to ``calls`` and returns ``self``."""
+
+    def __init__(self):
+        self.calls = []
+
+    def add(self, call, *args, value=0):
+        self.calls.append({"target": call, "value": value, "callData": _CALLDATA})
+        return self
+
+    def add_from_receipt(self, receipt):
+        self.calls.append({"target": receipt, "value": 0, "callData": _CALLDATA})
+        return self
+
+
+def _build_safe(eth, provider):
+    safe = _dev_safe(eth, provider)
+    safe.create_batch = _MultiSend
+    return safe
+
+
+def test_build_applies_each_add_and_restores_once():
+    from safe_propose.engine import build
+
+    eth, provider = _ApplyingEth(), _DevProvider()
+    handles = []
+
+    def definition(batch, ctx):
+        handles.append(batch)
+        assert batch.add("0xCredit") is batch  # chaining returns the wrapper
+        assert [tx["to"] for tx in eth.sent] == ["0xCredit"]  # applied before add returned
+        batch.add("0xSpend").add_from_receipt("0xReceipt")
+
+    batch = build(definition, None, _build_safe(eth, provider))
+
+    assert isinstance(batch, _MultiSend) and handles[0] is not batch
+    assert [c["target"] for c in batch.calls] == ["0xCredit", "0xSpend", "0xReceipt"]
+    assert [tx["to"] for tx in eth.sent] == ["0xCredit", "0xSpend"]  # receipt not re-applied
+    methods = [m for m, _ in provider.requests]
+    assert methods[:2] == ["evm_snapshot", "anvil_impersonateAccount"]
+    assert methods[-2:] == ["anvil_stopImpersonatingAccount", "evm_revert"]
+    assert methods.count("evm_revert") == 1
+
+
+def test_build_restores_once_when_definition_raises():
+    from safe_propose.engine import build
+
+    eth, provider = _ApplyingEth(), _DevProvider()
+
+    def definition(batch, ctx):
+        batch.add("0xCredit")
+        raise ValueError("bad cap")
+
+    with pytest.raises(ValueError, match="bad cap"):
+        build(definition, None, _build_safe(eth, provider))
+    methods = [m for m, _ in provider.requests]
+    assert methods[-2:] == ["anvil_stopImpersonatingAccount", "evm_revert"]
+    assert methods.count("evm_revert") == 1
+
+
+def test_build_falls_back_to_plain_batch_without_dev_rpc():
+    from safe_propose.engine import build
+
+    eth, provider = _ApplyingEth(), _DevProvider(fail={"evm_snapshot"})
+    handles = []
+
+    def definition(batch, ctx):
+        handles.append(batch)
+        batch.add("0xCredit")
+
+    batch = build(definition, None, _build_safe(eth, provider))
+    assert handles == [batch]
+    assert eth.sent == []
+    assert [m for m, _ in provider.requests] == ["evm_snapshot"]
+
+
+def test_build_skips_confirmed_revert_with_notice(capsys):
+    from safe_propose.engine import build
+
+    eth, provider = _ApplyingEth(), _DevProvider()
+
+    def definition(batch, ctx):
+        batch.add("0xSpend").add("0xCredit")
+
+    batch = build(definition, None, _build_safe(eth, provider))
+    assert len(batch.calls) == 2
+    assert [tx["to"] for tx in eth.sent] == ["0xCredit"]
+    err = capsys.readouterr().err
+    assert "call #1 (0xSpend) reverts on the fork (custom error 0xdeadbeef)" in err
+
+
+@pytest.mark.parametrize("failure", ["eth_call", "status", "timeout"])
+def test_build_aborts_on_unknown_result_and_still_restores(failure):
+    from safe_propose.engine import build
+
+    class FlakyEth(_ApplyingEth):
+        def call(self, tx, block_identifier=None, state_override=None, ccip_read_enabled=None):
+            if failure == "eth_call":
+                raise TimeoutError("read timed out")
+            return b""
+
+        def wait_for_transaction_receipt(self, tx_hash, timeout=None):
+            if failure == "timeout":
+                raise TimeoutError("receipt not found")
+            return {"status": 0}
+
+    eth, provider = FlakyEth(), _DevProvider()
+
+    def definition(batch, ctx):
+        batch.add("0xCredit")
+        pytest.fail("definition continued after an unknown result")
+
+    with pytest.raises(RuntimeError, match=r"call #1 \(0xCredit\)"):
+        build(definition, None, _build_safe(eth, provider))
+    assert provider.requests[-1] == ("evm_revert", ["0x1"])
+
+
+@pytest.mark.parametrize("stage", ["build", "simulate_trace"])
+def test_cleanup_failure_raises_but_still_reverts(stage):
+    from safe_propose.engine import build
+
+    eth, provider = _ApplyingEth(), _DevProvider(fail={"anvil_stopImpersonatingAccount"})
+    safe = _build_safe(eth, provider)
+    with pytest.raises(RuntimeError, match="fork cleanup failed.*stop impersonating"):
+        if stage == "build":
+            build(lambda batch, ctx: None, None, safe)
+        else:
+            simulate_trace(_credit_spend_batch(), safe, contract_lookup=None)
+    assert provider.requests[-1] == ("evm_revert", ["0x1"])
+
+
+def test_cleanup_rejects_false_evm_revert():
+    class FalseRevertProvider(_DevProvider):
+        def make_request(self, method, params):
+            response = super().make_request(method, params)
+            return {"result": False} if method == "evm_revert" else response
+
+    safe = _dev_safe(_ApplyingEth(), FalseRevertProvider())
+    with pytest.raises(RuntimeError, match="evm_revert returned False"):
+        simulate_trace(_credit_spend_batch(), safe, contract_lookup=None)
+
+
+def test_apply_raises_when_native_balance_cannot_be_restored():
+    class NoRestoreProvider(_DevProvider):
+        def make_request(self, method, params):
+            if method == "anvil_setBalance" and params[1] != hex(10**18):
+                self.requests.append((method, params))
+                return {"error": {"message": "setBalance unsupported"}}
+            return super().make_request(method, params)
+
+    provider = NoRestoreProvider()
+    with pytest.raises(RuntimeError, match="restore the Safe's native balance"):
+        simulate_trace(
+            _credit_spend_batch(), _dev_safe(_ApplyingEth(), provider), contract_lookup=None
+        )
+    assert provider.requests[-1] == ("evm_revert", ["0x1"])  # still cleaned up
