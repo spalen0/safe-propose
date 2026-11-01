@@ -249,7 +249,7 @@ def test_render_includes_transaction_stdout(success, diff):
     result = replace(_result(), stdout=output, success=success)
     block = render_block(result, diff=diff)
     assert f"### Simulation Prints\n\n```text\n{output}```" in block
-    assert block.index("### Simulation Prints") < block.index("### Simulated batch")
+    assert block.index("### Simulation Prints") < block.index("<summary>Simulated batch")
 
 
 def test_render_transaction_output_preserves_embedded_markdown():
@@ -265,3 +265,18 @@ def test_render_transaction_output_redacts_configured_secrets(monkeypatch):
     assert "RPC: ***url***\nkey: ***\n" in block
     assert "private-key-value" not in block
     assert "rpc.example" not in block
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_simulated_batch_is_collapsed_at_the_end(success):
+    block = render_block(replace(_result(), success=success), diff="+changed")
+    count = len(_result().decoded_calls)
+    summary = f"<details>\n<summary>Simulated batch ({count} call{'s' * (count != 1)})</summary>"
+    assert "### Simulated batch" not in block
+    assert block.count(summary) == 1
+    assert block.rstrip().endswith("</details>")
+    batch = block.index(summary)
+    # Everything a reviewer needs first stays visible above the collapsed batch.
+    assert block.index("### Simulation (per-call") < batch
+    assert block.index("safe_tx_hash:") < batch
+    assert block.index("#### [1]") > batch  # the decoded calls live inside it

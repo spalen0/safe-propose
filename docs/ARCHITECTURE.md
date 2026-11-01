@@ -55,8 +55,9 @@ and run from a PR branch.
    (`engine.simulate_trace`), applying each passing call to the fork before checking the
    next — a `Contract.method(args) → ok, gas≈N` trace over ordered batch state (see
    "Simulation scope" decision below).
-6. Render decoded calls, per-call calldata, the per-call trace, and the full EIP-712
-   SafeTx preview with `safe_tx_hash`. The preview retains its nonce, but there is no
+6. Render the per-call trace and the full EIP-712 SafeTx preview with `safe_tx_hash`,
+   then the decoded calls and per-call calldata last, collapsed under a
+   `<details>` **Simulated batch (N calls)** summary (advanced detail). The preview retains its nonce, but there is no
    proposal nonce/queue footer because nothing is queued.
    Nonblank captured stdout appears directly after the pre-flight status in a
    **Simulation Prints** text block, with the existing secret/URL redaction and a fence

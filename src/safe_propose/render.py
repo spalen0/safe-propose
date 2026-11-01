@@ -160,10 +160,11 @@ def render_tx_to_sign(result: SimulationResult) -> str:
 
 
 def render_block(result: SimulationResult, *, diff: str | None = None) -> str:
-    """Render the dry-run block with definition output, calls, typed-data preview, and hash.
+    """Render the dry-run block with definition output, trace, typed-data preview, and hash.
 
     No proposal footer is shown because nothing is queued. Failed reports omit the
-    typed-data preview.
+    typed-data preview. The decoded calls and their calldata come last, collapsed
+    (see :func:`render_batch_details`).
     """
     lines: list[str] = [
         f"## safe-propose: {result.fn_name} on {result.network} (chain {result.chain_id})",
@@ -183,8 +184,6 @@ def render_block(result: SimulationResult, *, diff: str | None = None) -> str:
         body = diff.rstrip() or "(no diff vs base)"
         lines += ["### Code diff", "```diff", body, "```", ""]
 
-    lines += ["### Simulated batch", "", render_calls(result), ""]
-
     # Brownie-style per-call trace (Contract.method(args) → ok/revert, gas≈N), when captured.
     trace_block = render_trace(result)
     if trace_block:
@@ -200,4 +199,17 @@ def render_block(result: SimulationResult, *, diff: str | None = None) -> str:
         lines.append(render_tx_to_sign(result))
     else:
         lines.append(f"{HASH_PREFIX} {result.safe_tx_hash}")
+
+    # Advanced detail last and collapsed: the trace above already summarizes each call.
+    lines += ["", render_batch_details(result)]
     return "\n".join(lines)
+
+
+def render_batch_details(result: SimulationResult) -> str:
+    """The decoded calls and their calldata, collapsed under a ``Simulated batch`` summary."""
+    count = len(result.decoded_calls)
+    noun = "call" if count == 1 else "calls"
+    return (
+        f"<details>\n<summary>Simulated batch ({count} {noun})</summary>\n\n"
+        f"{render_calls(result)}\n\n</details>"
+    )
